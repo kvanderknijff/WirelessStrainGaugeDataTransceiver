@@ -1,4 +1,4 @@
-"""Desktop dashboard for the NRF24 load-cell receiver.
+"""Huisman-branded dashboard for the Wireless Strain Gauge Data Transceiver.
 
 Receiver firmware protocol:
   LC,2,<sequence>,<raw_value>,<flags>,<tx_sample_ms>
@@ -28,13 +28,36 @@ except ImportError:
     list_ports = None
 
 
-APP_TITLE = "Load Cell Receiver Dashboard"
+APP_TITLE = "Huisman | Wireless Strain Gauge Data Transceiver"
 BAUD_RATE = 115200
 PLOT_POINTS = 900
 REFRESH_MS = 100
 PLOT_REFRESH_SECONDS = 0.20
 LOG_FLUSH_SECONDS = 1.0
 SERIAL_QUEUE_CAPACITY = 4096
+
+# Huisman Equipment-inspired UI palette.
+# The supplied JPEG is blank/solid white, so the dashboard also supports
+# an external "huisman_logo.png" next to this script. If it is not present,
+# a clean text fallback is shown instead of displaying a blank image.
+BRAND_NAVY = "#071B33"
+BRAND_NAVY_2 = "#0B2748"
+BRAND_BLUE = "#0093D0"
+BRAND_BLUE_LIGHT = "#76C8EA"
+BRAND_SKY = "#E7F6FC"
+BG = "#071B33"
+PANEL = "#0D2A49"
+FIELD = "#061625"
+TEXT = "#F3F8FC"
+MUTED = "#A9C0D3"
+GRID = "#244563"
+PLOT_BG = "#061625"
+ACCENT = "#0093D0"
+ACCENT_ACTIVE = "#18A4DE"
+SUCCESS = "#37B77A"
+WARNING = "#F0A33A"
+DANGER = "#D65B68"
+LOGO_FILE = Path(__file__).with_name("huisman_logo.png")
 
 
 @dataclass
@@ -58,7 +81,7 @@ class ReceiverDashboard(tk.Tk):
         self.title(APP_TITLE)
         self.minsize(1120, 720)
         self.geometry("1380x850")
-        self.configure(bg="#101722")
+        self.configure(bg=BG)
 
         self.serial_port = None
         self.serial_thread: threading.Thread | None = None
@@ -102,38 +125,74 @@ class ReceiverDashboard(tk.Tk):
         """Define the dark ttk theme shared by controls, panels and notebook tabs."""
         style = ttk.Style(self)
         style.theme_use("clam")
-        bg, panel, field, text, muted, accent = "#101722", "#182332", "#0d131d", "#e9f2ff", "#9eb0c7", "#35c3a6"
-        style.configure("TFrame", background=bg)
-        style.configure("Panel.TFrame", background=panel)
-        style.configure("TLabel", background=bg, foreground=text, font=("Segoe UI", 10))
-        style.configure("Panel.TLabel", background=panel, foreground=text, font=("Segoe UI", 10))
-        style.configure("Title.TLabel", background=bg, foreground=text, font=("Segoe UI Semibold", 20))
-        style.configure("Sub.TLabel", background=bg, foreground=muted, font=("Segoe UI", 10))
+        style.configure("TFrame", background=BG)
+        style.configure("Panel.TFrame", background=PANEL)
+        style.configure("TLabel", background=BG, foreground=TEXT, font=("Segoe UI", 10))
+        style.configure("Panel.TLabel", background=PANEL, foreground=TEXT, font=("Segoe UI", 10))
+        style.configure("Title.TLabel", background=BG, foreground=TEXT, font=("Segoe UI Semibold", 20))
+        style.configure("Sub.TLabel", background=BG, foreground=MUTED, font=("Segoe UI", 10))
         style.configure("TButton", padding=(10, 6), font=("Segoe UI Semibold", 9))
-        style.configure("Accent.TButton", background=accent, foreground="#061810")
-        style.map("Accent.TButton", background=[("active", "#5ee0c4")])
-        style.configure("Danger.TButton", background="#bd5360", foreground="white")
-        style.map("Danger.TButton", background=[("active", "#d96d79")])
-        style.configure("TCombobox", fieldbackground=field, background=field, foreground=text, arrowcolor=text)
-        style.map("TCombobox", fieldbackground=[("readonly", field)], foreground=[("readonly", text)])
-        style.configure("TCheckbutton", background=panel, foreground=text)
-        style.map("TCheckbutton", background=[("active", panel)], foreground=[("active", text)])
-        style.configure("TNotebook", background=panel, borderwidth=0)
-        style.configure("TNotebook.Tab", background="#253448", foreground=muted, padding=(14, 7))
-        style.map("TNotebook.Tab", background=[("selected", panel)], foreground=[("selected", text)])
+        style.configure("Accent.TButton", background=ACCENT, foreground="white")
+        style.map("Accent.TButton", background=[("active", ACCENT_ACTIVE)])
+        style.configure("Danger.TButton", background=DANGER, foreground="white")
+        style.map("Danger.TButton", background=[("active", "#E16F7A")])
+        style.configure("TCombobox", fieldbackground=FIELD, background=FIELD, foreground=TEXT, arrowcolor=TEXT)
+        style.map("TCombobox", fieldbackground=[("readonly", FIELD)], foreground=[("readonly", TEXT)])
+        style.configure("TCheckbutton", background=PANEL, foreground=TEXT)
+        style.map("TCheckbutton", background=[("active", PANEL)], foreground=[("active", TEXT)])
+        style.configure("TNotebook", background=PANEL, borderwidth=0)
+        style.configure("TNotebook.Tab", background=BRAND_NAVY_2, foreground=MUTED, padding=(14, 7))
+        style.map("TNotebook.Tab", background=[("selected", PANEL)], foreground=[("selected", TEXT)])
+        style.configure("TLabelframe", background=PANEL, foreground=MUTED)
+        style.configure("TLabelframe.Label", background=PANEL, foreground=BRAND_SKY,
+                        font=("Segoe UI Semibold", 9))
         self.option_add("*tearOff", False)
 
     def _build_ui(self) -> None:
         """Build connection controls, raw chart, log controls and terminal tabs."""
-        header = ttk.Frame(self, padding=(22, 18, 22, 8))
+        header = ttk.Frame(self, padding=(22, 14, 22, 8))
         header.pack(fill="x")
-        ttk.Label(header, text="Load Cell Receiver", style="Title.TLabel").pack(side="left")
+
+        # Huisman branding block. Prefer a real PNG logo supplied next to the
+        # script; otherwise show a clean text fallback so the UI never renders
+        # a blank white rectangle from the supplied JPEG.
+        brand = tk.Frame(header, bg=BG)
+        brand.pack(side="left", anchor="w")
+        self.logo_image = None
+        if LOGO_FILE.exists():
+            try:
+                self.logo_image = tk.PhotoImage(file=str(LOGO_FILE))
+                max_w, max_h = 210, 48
+                if self.logo_image.width() > max_w or self.logo_image.height() > max_h:
+                    # PhotoImage has no high-quality arbitrary scaling, so use
+                    # subsample only when a very large PNG is supplied.
+                    sx = max(1, (self.logo_image.width() + max_w - 1) // max_w)
+                    sy = max(1, (self.logo_image.height() + max_h - 1) // max_h)
+                    self.logo_image = self.logo_image.subsample(sx, sy)
+                tk.Label(brand, image=self.logo_image, bg=BG, bd=0).pack(anchor="w")
+            except tk.TclError:
+                self.logo_image = None
+
+        if self.logo_image is None:
+            tk.Label(
+                brand, text="HUISMAN", bg=BG, fg="white",
+                font=("Segoe UI Semibold", 24), padx=0, pady=0
+            ).pack(anchor="w")
+            tk.Frame(brand, bg=BRAND_BLUE, height=3, width=128).pack(anchor="w", pady=(2, 3))
+
+        tk.Label(
+            brand, text="WIRELESS STRAIN GAUGE DATA TRANSCEIVER", bg=BG, fg=BRAND_SKY,
+            font=("Segoe UI Semibold", 9), padx=0
+        ).pack(anchor="w")
+
         self.status_var = tk.StringVar(value="Disconnected - choose a receiver COM port")
-        self.status_ball = tk.Canvas(header, width=18, height=18, bg="#101722", highlightthickness=0)
+        self.status_ball = tk.Canvas(header, width=18, height=18, bg=BG, highlightthickness=0)
         self.status_ball.pack(side="right", padx=(8, 0))
         self.status_label = ttk.Label(header, textvariable=self.status_var, style="Sub.TLabel")
         self.status_label.pack(side="right", padx=4)
         self.set_connection_status("disconnected", self.status_var.get())
+
+        tk.Frame(self, bg=BRAND_BLUE, height=3).pack(fill="x", padx=22, pady=(0, 10))
 
         connection = ttk.Frame(self, style="Panel.TFrame", padding=12)
         connection.pack(fill="x", padx=22, pady=(0, 12))
@@ -162,7 +221,7 @@ class ReceiverDashboard(tk.Tk):
         self.seq_var = tk.StringVar(value="Sequence —")
         self.rate_var = tk.StringVar(value="0 packets")
         ttk.Label(summary, text="RAW LOAD CELL", style="Panel.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(summary, textvariable=self.value_var, style="Panel.TLabel", font=("Segoe UI Semibold", 28)).grid(row=1, column=0, sticky="w")
+        tk.Label(summary, textvariable=self.value_var, bg=PANEL, fg=BRAND_SKY, font=("Segoe UI Semibold", 28)).grid(row=1, column=0, sticky="w")
         ttk.Label(summary, textvariable=self.seq_var, style="Panel.TLabel").grid(row=2, column=0, sticky="w")
         ttk.Label(summary, textvariable=self.rate_var, style="Panel.TLabel").grid(row=2, column=1, sticky="e", padx=24)
         ttk.Button(summary, text="Clear graph", command=self.clear_graph).grid(row=1, column=1, rowspan=1, sticky="e", padx=24)
@@ -171,7 +230,7 @@ class ReceiverDashboard(tk.Tk):
         chart_tabs.grid(row=2, column=0, sticky="nsew")
         raw_tab = ttk.Frame(chart_tabs, style="Panel.TFrame")
         chart_tabs.add(raw_tab, text="Raw counts")
-        self.raw_plot = tk.Canvas(raw_tab, bg="#0d131d", highlightthickness=0)
+        self.raw_plot = tk.Canvas(raw_tab, bg=PLOT_BG, highlightthickness=0)
         self.raw_plot.pack(fill="both", expand=True)
         self.raw_plot.bind("<Configure>", lambda _event: self.mark_plot_dirty())
         ttk.Label(left, text="X-axis uses transmitter sample time. Set chart span and Y ranges in Graph settings.", style="Panel.TLabel").grid(row=3, column=0, sticky="w", pady=(9, 0))
@@ -186,7 +245,7 @@ class ReceiverDashboard(tk.Tk):
         ttk.Button(buttons, text="Stop node", style="Danger.TButton", command=lambda: self.send_command("stop")).pack(side="left", fill="x", expand=True, padx=(4, 0))
         self.notice_var = tk.StringVar(value="Ready. Connect to a receiver serial port.")
         notice = tk.Label(right, textvariable=self.notice_var, justify="left", anchor="w", wraplength=340,
-                          bg="#21374c", fg="#dcedff", font=("Segoe UI", 10), padx=12, pady=10)
+                          bg=BRAND_NAVY_2, fg=BRAND_SKY, font=("Segoe UI", 10), padx=12, pady=10)
         notice.grid(row=2, column=0, sticky="ew", pady=(0, 14))
 
         settings = ttk.LabelFrame(right, text="GRAPH AND CALIBRATION", padding=8)
@@ -225,7 +284,7 @@ class ReceiverDashboard(tk.Tk):
 
     def set_connection_status(self, state: str, text: str) -> None:
         """Show a colored state ball and matching human-readable connection status."""
-        colors = {"connected": "#35c3a6", "waiting": "#f0a33a", "disconnected": "#d55c68"}
+        colors = {"connected": SUCCESS, "waiting": WARNING, "disconnected": DANGER}
         color = colors.get(state, colors["disconnected"])
         self.status_ball.delete("all")
         self.status_ball.create_oval(3, 3, 15, 15, fill=color, outline="")
@@ -239,7 +298,7 @@ class ReceiverDashboard(tk.Tk):
         """Create one bounded, scrollable read-only terminal tab."""
         frame = ttk.Frame(notebook, style="Panel.TFrame")
         notebook.add(frame, text=label)
-        text = tk.Text(frame, height=12, bg="#0d131d", fg="#d6e4f3", insertbackground="white",
+        text = tk.Text(frame, height=12, bg=PLOT_BG, fg="#d6e4f3", insertbackground="white",
                        relief="flat", wrap="word", font=("Cascadia Mono", 9), state="disabled")
         scroll = ttk.Scrollbar(frame, command=text.yview)
         text.configure(yscrollcommand=scroll.set)
@@ -564,9 +623,9 @@ class ReceiverDashboard(tk.Tk):
             return
         canvas.delete("all")
         left, top, right, bottom = 58, 16, width - 18, height - 34
-        canvas.create_rectangle(left, top, right, bottom, outline="#31445c")
+        canvas.create_rectangle(left, top, right, bottom, outline=GRID)
         if not self.points:
-            canvas.create_text(width / 2, height / 2, text="Waiting for load-cell data", fill="#71859f", font=("Segoe UI", 12))
+            canvas.create_text(width / 2, height / 2, text="Waiting for load-cell data", fill=MUTED, font=("Segoe UI", 12))
             return
         window, newest = self.axis_window_seconds(), self.points[-1].device_elapsed_s
         visible = [(point, value) for point, value in zip(self.points, all_values) if point.device_elapsed_s >= newest - window]
@@ -584,22 +643,22 @@ class ReceiverDashboard(tk.Tk):
                 low, high = min(values) - 1.0, max(values) + 1.0
         for step in range(5):
             y, value = top + (bottom - top) * step / 4, high - (high - low) * step / 4
-            canvas.create_line(left, y, right, y, fill="#1e2b3c")
-            canvas.create_text(left - 7, y, text=f"{value:,.3g}", fill="#91a5bd", anchor="e", font=("Segoe UI", 8))
+            canvas.create_line(left, y, right, y, fill=GRID)
+            canvas.create_text(left - 7, y, text=f"{value:,.3g}", fill=MUTED, anchor="e", font=("Segoe UI", 8))
         tick_step = max(1, int(window / 4))
         for seconds_ago in range(0, int(window) + 1, tick_step):
             x = right - (right - left) * seconds_ago / window
-            canvas.create_line(x, top, x, bottom, fill="#1e2b3c")
-            canvas.create_text(x, bottom + 16, text=f"-{seconds_ago}s" if seconds_ago else "now", fill="#91a5bd", font=("Segoe UI", 8))
+            canvas.create_line(x, top, x, bottom, fill=GRID)
+            canvas.create_text(x, bottom + 16, text=f"-{seconds_ago}s" if seconds_ago else "now", fill=MUTED, font=("Segoe UI", 8))
         coordinates: list[float] = []
         for point, value in visible:
             coordinates.extend((right - (right - left) * (newest - point.device_elapsed_s) / window,
                                 bottom - (bottom - top) * (value - low) / (high - low)))
         if len(coordinates) >= 4:
-            canvas.create_line(*coordinates, fill="#35c3a6", width=2, smooth=True)
+            canvas.create_line(*coordinates, fill=BRAND_BLUE_LIGHT, width=2, smooth=True)
         if coordinates:
-            canvas.create_oval(coordinates[-2] - 3, coordinates[-1] - 3, coordinates[-2] + 3, coordinates[-1] + 3, fill="#6ee7cf", outline="")
-        canvas.create_text(left, top - 8, text=f"{title} {unit}".strip(), fill="#91a5bd", anchor="sw", font=("Segoe UI Semibold", 8))
+            canvas.create_oval(coordinates[-2] - 3, coordinates[-1] - 3, coordinates[-2] + 3, coordinates[-1] + 3, fill=BRAND_SKY, outline="")
+        canvas.create_text(left, top - 8, text=f"{title} {unit}".strip(), fill=MUTED, anchor="sw", font=("Segoe UI Semibold", 8))
 
     def draw_plot(self) -> None:
         """Compatibility entry point retained for older callbacks; delegates to draw_plots."""
@@ -613,9 +672,9 @@ class ReceiverDashboard(tk.Tk):
         canvas.delete("all")
         margin = (58, 16, 18, 34)
         left, top, right, bottom = margin[0], margin[1], width - margin[2], height - margin[3]
-        canvas.create_rectangle(left, top, right, bottom, outline="#31445c")
+        canvas.create_rectangle(left, top, right, bottom, outline=GRID)
         if not self.points:
-            canvas.create_text(width / 2, height / 2, text="Waiting for load-cell data", fill="#71859f", font=("Segoe UI", 12))
+            canvas.create_text(width / 2, height / 2, text="Waiting for load-cell data", fill=MUTED, font=("Segoe UI", 12))
             return
         newest = self.points[-1].device_elapsed_s
         visible = [p for p in self.points if p.device_elapsed_s >= newest - PLOT_WINDOW_SECONDS]
@@ -630,22 +689,22 @@ class ReceiverDashboard(tk.Tk):
         for step in range(5):
             y = top + (bottom - top) * step / 4
             value = high - (high - low) * step / 4
-            canvas.create_line(left, y, right, y, fill="#1e2b3c")
-            canvas.create_text(left - 7, y, text=f"{value:,.0f}", fill="#91a5bd", anchor="e", font=("Segoe UI", 8))
+            canvas.create_line(left, y, right, y, fill=GRID)
+            canvas.create_text(left - 7, y, text=f"{value:,.0f}", fill=MUTED, anchor="e", font=("Segoe UI", 8))
         for seconds_ago in range(0, int(PLOT_WINDOW_SECONDS) + 1, 15):
             x = right - (right - left) * seconds_ago / PLOT_WINDOW_SECONDS
-            canvas.create_line(x, top, x, bottom, fill="#1e2b3c")
-            canvas.create_text(x, bottom + 16, text=f"-{seconds_ago}s" if seconds_ago else "now", fill="#91a5bd", font=("Segoe UI", 8))
+            canvas.create_line(x, top, x, bottom, fill=GRID)
+            canvas.create_text(x, bottom + 16, text=f"-{seconds_ago}s" if seconds_ago else "now", fill=MUTED, font=("Segoe UI", 8))
         coordinates = []
         for point in visible:
             x = right - (right - left) * (newest - point.device_elapsed_s) / PLOT_WINDOW_SECONDS
             y = bottom - (bottom - top) * (point.value - low) / (high - low)
             coordinates.extend((x, y))
         if len(coordinates) >= 4:
-            canvas.create_line(*coordinates, fill="#35c3a6", width=2, smooth=True)
+            canvas.create_line(*coordinates, fill=BRAND_BLUE_LIGHT, width=2, smooth=True)
         if coordinates:
-            canvas.create_oval(coordinates[-2] - 3, coordinates[-1] - 3, coordinates[-2] + 3, coordinates[-1] + 3, fill="#6ee7cf", outline="")
-        canvas.create_text(left, top - 8, text="RAW AMPLITUDE", fill="#91a5bd", anchor="sw", font=("Segoe UI Semibold", 8))
+            canvas.create_oval(coordinates[-2] - 3, coordinates[-1] - 3, coordinates[-2] + 3, coordinates[-1] + 3, fill=BRAND_SKY, outline="")
+        canvas.create_text(left, top - 8, text="RAW AMPLITUDE", fill=MUTED, anchor="sw", font=("Segoe UI Semibold", 8))
 
     def notice(self, text: str, error: bool = False) -> None:
         """Display a concise informational or warning notification in the side panel."""
