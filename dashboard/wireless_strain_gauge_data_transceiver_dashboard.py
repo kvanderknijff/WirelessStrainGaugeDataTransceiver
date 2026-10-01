@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import csv
 import queue
+import tempfile
 import threading
 import time
 from collections import deque
@@ -318,6 +319,11 @@ class ReceiverDashboard(tk.Tk):
         old_port = self.port_labels.get(self.port_var.get(), self.port_var.get())
         ports = list(list_ports.comports())  # Fast OS enumeration; does not open/probe ports.
         self.port_labels = {f"{p.device} — {p.description or 'Serial device'}": p.device for p in ports}
+        # TX_simulator.py creates PTY links here; OS port enumeration omits them.
+        known_devices = set(self.port_labels.values())
+        for port in sorted(Path(tempfile.gettempdir()).glob("strain_gauge_serial_*/dashboard")):
+            if port.is_char_device() and str(port) not in known_devices:
+                self.port_labels[f"TX simulator — {port}"] = str(port)
         labels = list(self.port_labels)
         self.port_box["values"] = labels
         if old_port:
@@ -660,52 +666,12 @@ class ReceiverDashboard(tk.Tk):
             canvas.create_oval(coordinates[-2] - 3, coordinates[-1] - 3, coordinates[-2] + 3, coordinates[-1] + 3, fill=BRAND_SKY, outline="")
         canvas.create_text(left, top - 8, text=f"{title} {unit}".strip(), fill=MUTED, anchor="sw", font=("Segoe UI Semibold", 8))
 
-    def draw_plot(self) -> None:
-        """Compatibility entry point retained for older callbacks; delegates to draw_plots."""
-        """Compatibility wrapper for older callbacks."""
-        self.draw_plots()
-        return
-        canvas = self.plot
-        width, height = canvas.winfo_width(), canvas.winfo_height()
-        if width < 20 or height < 20:
-            return
-        canvas.delete("all")
-        margin = (58, 16, 18, 34)
-        left, top, right, bottom = margin[0], margin[1], width - margin[2], height - margin[3]
-        canvas.create_rectangle(left, top, right, bottom, outline=GRID)
-        if not self.points:
-            canvas.create_text(width / 2, height / 2, text="Waiting for load-cell data", fill=MUTED, font=("Segoe UI", 12))
-            return
-        newest = self.points[-1].device_elapsed_s
-        visible = [p for p in self.points if p.device_elapsed_s >= newest - PLOT_WINDOW_SECONDS]
-        values = [p.value for p in visible]
-        low, high = min(values), max(values)
-        if low == high:
-            pad = max(10, abs(low) * 0.02)
-            low, high = low - pad, high + pad
-        else:
-            pad = max(1.0, (high - low) * 0.08)
-            low, high = low - pad, high + pad
-        for step in range(5):
-            y = top + (bottom - top) * step / 4
-            value = high - (high - low) * step / 4
-            canvas.create_line(left, y, right, y, fill=GRID)
-            canvas.create_text(left - 7, y, text=f"{value:,.0f}", fill=MUTED, anchor="e", font=("Segoe UI", 8))
-        for seconds_ago in range(0, int(PLOT_WINDOW_SECONDS) + 1, 15):
-            x = right - (right - left) * seconds_ago / PLOT_WINDOW_SECONDS
-            canvas.create_line(x, top, x, bottom, fill=GRID)
-            canvas.create_text(x, bottom + 16, text=f"-{seconds_ago}s" if seconds_ago else "now", fill=MUTED, font=("Segoe UI", 8))
-        coordinates = []
-        for point in visible:
-            x = right - (right - left) * (newest - point.device_elapsed_s) / PLOT_WINDOW_SECONDS
-            y = bottom - (bottom - top) * (point.value - low) / (high - low)
-            coordinates.extend((x, y))
-        if len(coordinates) >= 4:
-            canvas.create_line(*coordinates, fill=BRAND_BLUE_LIGHT, width=2, smooth=True)
-        if coordinates:
-            canvas.create_oval(coordinates[-2] - 3, coordinates[-1] - 3, coordinates[-2] + 3, coordinates[-1] + 3, fill=BRAND_SKY, outline="")
-        canvas.create_text(left, top - 8, text="RAW AMPLITUDE", fill=MUTED, anchor="sw", font=("Segoe UI Semibold", 8))
-
+    # def draw_plot(self) -> None:
+    #     """Compatibility entry point retained for older callbacks; delegates to draw_plots."""
+    #     """Compatibility wrapper for older callbacks."""
+    #     self.draw_plots()
+    #     return
+        
     def notice(self, text: str, error: bool = False) -> None:
         """Display a concise informational or warning notification in the side panel."""
         self.notice_var.set(("⚠ " if error else "● ") + text)
