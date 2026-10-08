@@ -1,222 +1,103 @@
-# Wireless Strain Gauge Data Transceiver
+# COM Communication Protocol
 
-## COM Communication Protocol
+## Seriële verbinding en meetbericht
 
-Dit document beschrijft kort hoe de communicatie tussen de **receiver**
-en het **dashboard** via de COM-poort verloopt.
+Eén seriële verbinding: **115200 baud, 8 databits, geen pariteit, 1 stopbit**,
+geen flow control. ASCII-tekstregels worden afgesloten met CRLF (`\r\n`).
 
-------------------------------------------------------------------------
-
-## 1. Seriële verbinding
-
-  Instelling             Waarde
-  ---------------------- --------------------------------------
-  Baudrate               `115200`
-  Communicatie           Tekstgebaseerd
-  Ontvangst              Eén bericht per regel
-  Dashboard → receiver   ASCII-commando's met `CRLF` (`\r\n`)
-
-------------------------------------------------------------------------
-
-## 2. Meetbericht
-
-De receiver stuurt meetdata naar het dashboard in het volgende formaat:
-
-``` text
-LC,2,<sequence>,<raw_value>,<flags>,<tx_sample_ms>
+```text
+LC,<strain_gauge_id>,<sequence>,<raw_value>,<flags>,<tx_sample_ms>
 ```
 
-### Voorbeeld
+Het tweede veld is een unieke **strain_gauge_id**, geen protocolnummer.
+Een oud bericht `LC,2,...` wordt geïnterpreteerd als gauge met ID `2`.
+Firmware en simulator moeten dezelfde nieuwe veldbetekenis gebruiken.
 
-``` text
-LC,2,1534,82731,0,1234567
+| Veld | Betekenis |
+| --- | --- |
+| `LC` | Vast voorvoegsel voor meetdata. |
+| `strain_gauge_id` | Hoofdlettergevoelige ID van 1–32 ASCII-letters, cijfers, underscores of koppeltekens. Uniek en stabiel per gauge. |
+| `sequence` | Volgnummer per gauge, unsigned 16-bit: 0–65535, daarna 0. |
+| `raw_value` | Ruwe meetwaarde als decimaal geheel getal; negatief toegestaan. |
+| `flags` | Niet-negatieve gehele statuswaarde, hexadecimaal weergegeven. Betekenis van de bits wordt door firmware bepaald. |
+| `tx_sample_ms` | Sampletijd van de betreffende transmitter, unsigned 32-bit milliseconden: 0–4294967295. |
+
+Voorbeeld van drie door elkaar verzonden datastromen:
+
+```text
+LC,SG_1,1534,82731,0,1234567
+LC,SG_2,81,86420,0,8100
+LC,SG_3,327,79800,0,32700
+LC,SG_1,1535,82744,0,1234667
 ```
 
-Dit bericht bestaat uit zes velden:
+Het dashboard wijst de eerste drie unieke ID's automatisch toe aan drie
+tegelijk zichtbare grafieken. Een vierde ID wordt genegeerd en als debug
+geregistreerd. Herstart het dashboard om een andere set ID's toe te wijzen.
 
-  -------------------------------------------------------------------------
-  Veld                                     Voorbeeld Betekenis
-  --------------------- ---------------------------- ----------------------
-  `LC`                                          `LC` Geeft aan dat de regel
-                                                     een meetbericht is.
+Elke gauge heeft een eigen meetbuffer (maximaal 900 samples), sequencecontrole,
+samplefrequentie en tijdsbasis. Grafieken tonen tijd ten opzichte van de nieuwste
+sample van hun eigen gauge; dit synchroniseert de transmitters niet.
+Bij een teruglopende timestamp groter dan 2^31 ms wordt uint32-overloop
+verwerkt. Een kleinere terugloop wordt beschouwd als transmitterherstart:
+alleen de geschiedenis en tellercontrole van die gauge worden gereset.
+Ongeldige meetregels worden als `malformed_data` gelogd.
 
-  Protocolversie                                 `2` Versie van het
-                                                     protocol. Het
-                                                     dashboard verwacht
-                                                     momenteel versie `2`.
+## Kalibratie in de GUI
 
-  `sequence`                                  `1534` Volgnummer van het
-                                                     meetpakket. Wordt
-                                                     gebruikt om te
-                                                     controleren of
-                                                     pakketten in de juiste
-                                                     volgorde binnenkomen.
+Elke gauge heeft eigen instellingen via het tabblad met zijn ID:
 
-  `raw_value`                                `82731` Ruwe meetwaarde van de
-                                                     strain gauge. Dit is
-                                                     de waarde die het
-                                                     dashboard weergeeft en
-                                                     plot.
-
-  `flags`                                        `0` Status-/flagswaarde.
-                                                     Het dashboard leest
-                                                     deze als integer en
-                                                     kan deze hexadecimaal
-                                                     weergeven.
-
-  `tx_sample_ms`                           `1234567` Timestamp van de
-                                                     transmitter in
-                                                     milliseconden. Wordt
-                                                     gebruikt als
-                                                     tijdsbasis voor de
-                                                     grafiek.
-  -------------------------------------------------------------------------
-
-------------------------------------------------------------------------
-
-## 3. Sequence number
-
-`sequence` wordt gebruikt om te controleren of er meetpakketten
-ontbreken.
-
-Bijvoorbeeld:
-
-``` text
-100
-101
-102
-103
+```text
+weergegeven waarde = (raw_value − zero) × gain + offset
 ```
 
-is een normale volgorde.
+- **Zero balance** neemt de laatste ruwe sample als nulreferentie en zet de
+  offset terug op 0, zodat die sample exact nul weergeeft. Ontvang eerst data.
+- **Offset** wordt opgeteld in de gekozen uitvoereenheid.
+- **Gain** converteert counts naar de uitvoereenheid (bijvoorbeeld 0.01 kN/count).
+  Negatieve gain is toegestaan; nul, NaN en oneindig niet.
+- **Output unit** is het eenheidlabel, bijvoorbeeld kN of µε.
+- **Apply** past offset, gain en eenheid toe. **Reset calibration** herstelt
+  zero = 0, offset = 0, gain = 1 en de eenheid counts.
 
-Wanneer bijvoorbeeld dit wordt ontvangen:
+Voorbeeld: raw = 82731, zero = 82000, gain = 0.01 en offset = 2 geeft 9.31 kN.
+Kalibratie gebeurt lokaal; er worden geen kalibratiecommando's verstuurd.
+Bestaande grafiekhistorie wordt met de huidige instellingen weergegeven.
+De ruwe waarde blijft naast de omgerekende waarde zichtbaar.
+Instellingen blijven behouden bij Clear graphs, reconnect en transmitterreset,
+maar worden niet opgeslagen bij afsluiten. Clear graphs wist de historie van
+alle drie gauges; de ID-toewijzing blijft staan.
 
-``` text
-100
-101
-105
+## CSV en debug
+
+Data-CSV bevat per sample:
+
+```text
+pc_received_utc,host_elapsed_s,tx_sample_ms,tx_elapsed_s,sequence,raw_value,flags,strain_gauge_id,converted_value,unit,zero,offset,gain
 ```
 
-kan het dashboard signaleren dat de verwachte pakketten niet
-opeenvolgend zijn binnengekomen.
+Kalibratievelden en omgerekende waarde leggen de instellingen op het moment
+van ontvangst vast. Eerdere CSV-rijen wijzigen niet na kalibreren.
+PC-ontvangsttijd is UTC; TX-tijd blijft per gauge onafhankelijk.
+Regels zonder `LC,` zijn firmware-/debuguitvoer en worden afzonderlijk gelogd.
 
-De sequencecontrole gebruikt een **16-bit wrap**:
+## Commando's
 
-``` text
-65534
-65535
-0
-1
-```
+Dashboard → receiver:
 
-Na `65535` wordt dus `0` verwacht.
-
-------------------------------------------------------------------------
-
-## 4. Ruwe meetwaarde
-
-`raw_value` bevat de ruwe meetwaarde van de strain gauge.
-
-Voorbeeld:
-
-``` text
-82731
-```
-
-Het dashboard gebruikt deze waarde rechtstreeks voor de live weergave en
-grafiek.
-
-> De omzetting of kalibratie naar een fysieke eenheid is niet vastgelegd
-> in de dashboardcode.
-
-------------------------------------------------------------------------
-
-## 5. Flags
-
-`flags` is een integer met statusinformatie.
-
-Voorbeeld:
-
-``` text
-0
-```
-
-Het dashboard kan deze waarde hexadecimaal weergeven.
-
-> De betekenis van de afzonderlijke flagbits is niet vastgelegd in de
-> dashboardcode.
-
-------------------------------------------------------------------------
-
-## 6. Transmitter timestamp
-
-`tx_sample_ms` is de timestamp van de transmitter in milliseconden.
-
-Voorbeeld:
-
-``` text
-1234567
-```
-
-Het dashboard gebruikt deze timestamp als tijdsbasis voor de grafiek.
-
-De waarde wordt behandeld als een **32-bit unsigned integer**:
-
-``` text
-0 t/m 4294967295
-```
-
-Het dashboard houdt rekening met het overlopen van deze teller.
-
-------------------------------------------------------------------------
-
-## 7. Status- en debugberichten
-
-Regels die **niet** beginnen met:
-
-``` text
-LC,
-```
-
-worden door het dashboard behandeld als status- of debugberichten van de
-receiver/firmware.
-
-Deze berichten worden dus niet als meetdata in de grafiek geplaatst.
-
-------------------------------------------------------------------------
-
-## 8. Commando's naar de receiver
-
-Het dashboard kan via dezelfde COM-poort commando's terugsturen.
-
-### Start
-
-``` text
+```text
 start\r\n
-```
-
-### Stop
-
-``` text
 stop\r\n
 ```
 
-De commando's worden als ASCII-tekst verstuurd en afgesloten met `CRLF`.
+Deze commando's gelden voor de volledige stream; ze bevatten geen gauge-ID.
+De simulator start/stopt alle drie gauges tegelijk. Receiverfirmware moet dit
+gedrag voor de aangesloten transmitters ondersteunen.
 
-------------------------------------------------------------------------
+## TX-simulator
 
-## 9. Communicatie in het kort
-
-``` text
-Receiver → Dashboard
-
-LC,2,sequence,raw_value,flags,tx_sample_ms
-```
-
-``` text
-Dashboard → Receiver
-
-start
-stop
-```
+[TX_simulator.py](./TX_simulator.py) stuurt `SG_1`, `SG_2` en `SG_3` met
+verschillende signalen en onafhankelijke 16-bit sequencecounters via één poort.
+De ingestelde frequentie is per gauge: 10 Hz betekent 30 berichten/s totaal.
+Start het script, selecteer de getoonde dashboardpoort en klik op Start node.
+De simulator kan ook direct starten zonder op het commando te wachten.

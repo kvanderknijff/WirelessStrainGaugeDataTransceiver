@@ -1,7 +1,7 @@
 """Huisman-branded dashboard for the Wireless Strain Gauge Data Transceiver.
 
 Receiver firmware protocol:
-  LC,2,<sequence>,<raw_value>,<flags>,<tx_sample_ms>
+  LC,<strain_gauge_id>,<sequence>,<raw_value>,<flags>,<tx_sample_ms>
 
 All other lines are retained verbatim as firmware/debug output.  The program
 uses only tkinter (bundled with normal Windows Python) plus pyserial.
@@ -10,12 +10,13 @@ uses only tkinter (bundled with normal Windows Python) plus pyserial.
 from __future__ import annotations
 
 import csv
+import math
 import queue
 import tempfile
 import threading
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 import tkinter as tk
@@ -71,6 +72,24 @@ class DataPoint:
     sequence: int
     value: int
     flags: int
+    strain_gauge_id: str
+
+
+@dataclass
+class GaugeState:
+    strain_gauge_id: str = ""
+    points: deque = field(default_factory=lambda: deque(maxlen=PLOT_POINTS))
+    last_sequence: int | None = None
+    last_tx_sample_ms: int | None = None
+    tx_epoch_ms: int = 0
+    tx_origin_ms: int | None = None
+    zero: float = 0.0
+    offset: float = 0.0
+    gain: float = 1.0
+    unit: str = "counts"
+
+    def converted(self, raw: int) -> float:
+        return (raw - self.zero) * self.gain + self.offset
 
 
 class ReceiverDashboard(tk.Tk):
@@ -92,12 +111,8 @@ class ReceiverDashboard(tk.Tk):
         self.serial_queue_drops = 0
         self.reported_queue_drops = 0
         self.port_labels: dict[str, str] = {}
-        self.points: deque[DataPoint] = deque(maxlen=PLOT_POINTS)
+        self.gauges = [GaugeState() for _ in range(3)]
         self.program_started = time.monotonic()
-        self.last_sequence: int | None = None
-        self.last_tx_sample_ms: int | None = None
-        self.tx_epoch_ms = 0
-        self.tx_origin_ms: int | None = None
         self.data_writer = None
         self.data_file = None
         self.debug_writer = None
@@ -218,26 +233,37 @@ class ReceiverDashboard(tk.Tk):
         left.columnconfigure(0, weight=1)
         summary = ttk.Frame(left, style="Panel.TFrame")
         summary.grid(row=0, column=0, sticky="ew", pady=(0, 10))
-        self.value_var = tk.StringVar(value="—")
-        self.seq_var = tk.StringVar(value="Sequence —")
-        self.rate_var = tk.StringVar(value="0 packets")
-        ttk.Label(summary, text="RAW LOAD CELL", style="Panel.TLabel").grid(row=0, column=0, sticky="w")
-        tk.Label(summary, textvariable=self.value_var, bg=PANEL, fg=BRAND_SKY, font=("Segoe UI Semibold", 28)).grid(row=1, column=0, sticky="w")
-        ttk.Label(summary, textvariable=self.seq_var, style="Panel.TLabel").grid(row=2, column=0, sticky="w")
-        ttk.Label(summary, textvariable=self.rate_var, style="Panel.TLabel").grid(row=2, column=1, sticky="e", padx=24)
-        ttk.Button(summary, text="Clear graph", command=self.clear_graph).grid(row=1, column=1, rowspan=1, sticky="e", padx=24)
-
-        chart_tabs = ttk.Notebook(left)
-        chart_tabs.grid(row=2, column=0, sticky="nsew")
-        raw_tab = ttk.Frame(chart_tabs, style="Panel.TFrame")
-        chart_tabs.add(raw_tab, text="Raw counts")
-        self.raw_plot = tk.Canvas(raw_tab, bg=PLOT_BG, highlightthickness=0)
-        self.raw_plot.pack(fill="both", expand=True)
-        self.raw_plot.bind("<Configure>", lambda _event: self.mark_plot_dirty())
+        ttk.Label(summary, text="STRAIN GAUGES · 3 CHANNELS", style="Panel.TLabel").pack(side="left")
+        ttk.Button(summary, text="Clear graphs", command=self.clear_graph).pack(side="right")
+        charts = ttk.Frame(left, style="Panel.TFrame")
+        charts.grid(row=2, column=0, sticky="nsew")
+        charts.columnconfigure(0, weight=1)
+        self.gauge_widgets = []
+        for index, gauge in enumerate(self.gauges):
+            charts.rowconfigure(index, weight=1)
+            panel = ttk.Frame(charts, style="Panel.TFrame")
+            panel.grid(row=index, column=0, sticky="nsew", pady=3)
+            value_var = tk.StringVar(value=f"Gauge {index + 1} · waiting for ID")
+            ttk.Label(panel, textvariable=value_var, style="Panel.TLabel").pack(anchor="w")
+            plot = tk.Canvas(panel, bg=PLOT_BG, highlightthickness=0, height=110)
+            plot.pack(fill="both", expand=True)
+            plot.bind("<Configure>", lambda _event: self.mark_plot_dirty())
+            self.gauge_widgets.append({"value": value_var, "plot": plot})
         ttk.Label(left, text="X-axis uses transmitter sample time. Set chart span and Y ranges in Graph settings.", style="Panel.TLabel").grid(row=3, column=0, sticky="w", pady=(9, 0))
 
-        right = ttk.Frame(body, style="Panel.TFrame", padding=14)
-        right.grid(row=0, column=1, sticky="nsew")
+        sidebar = ttk.Frame(body, style="Panel.TFrame")
+        sidebar.grid(row=0, column=1, sticky="nsew")
+        sidebar.rowconfigure(0, weight=1)
+        sidebar.columnconfigure(0, weight=1)
+        sidebar_canvas = tk.Canvas(sidebar, bg=PANEL, highlightthickness=0, width=430)
+        sidebar_canvas.grid(row=0, column=0, sticky="nsew")
+        sidebar_scroll = ttk.Scrollbar(sidebar, orient="vertical", command=sidebar_canvas.yview)
+        sidebar_scroll.grid(row=0, column=1, sticky="ns")
+        sidebar_canvas.configure(yscrollcommand=sidebar_scroll.set)
+        right = ttk.Frame(sidebar_canvas, style="Panel.TFrame", padding=14)
+        sidebar_window = sidebar_canvas.create_window((0, 0), window=right, anchor="nw")
+        right.bind("<Configure>", lambda _event: sidebar_canvas.configure(scrollregion=sidebar_canvas.bbox("all")))
+        sidebar_canvas.bind("<Configure>", lambda event: sidebar_canvas.itemconfigure(sidebar_window, width=event.width))
         right.columnconfigure(0, weight=1)
         ttk.Label(right, text="DEVICE CONTROLS", style="Panel.TLabel", font=("Segoe UI Semibold", 11)).grid(row=0, column=0, sticky="w")
         buttons = ttk.Frame(right, style="Panel.TFrame")
@@ -254,7 +280,22 @@ class ReceiverDashboard(tk.Tk):
         ttk.Label(settings, text="X window (s)", style="Panel.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Entry(settings, textvariable=self.x_window_var, width=7).grid(row=0, column=1, sticky="w", padx=(6, 12))
         ttk.Button(settings, text="Apply", command=self.mark_plot_dirty).grid(row=0, column=2, sticky="w")
-        self._axis_controls(settings, 1, "Raw Y", self.raw_auto_var, self.raw_y_min_var, self.raw_y_max_var)
+        self._axis_controls(settings, 1, "Value Y", self.raw_auto_var, self.raw_y_min_var, self.raw_y_max_var)
+        calibration = ttk.Notebook(settings)
+        calibration.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+        self.calibration_tabs = calibration
+        for index, gauge in enumerate(self.gauges):
+            tab = ttk.Frame(calibration, style="Panel.TFrame", padding=5)
+            calibration.add(tab, text=f"Gauge {index + 1}")
+            widgets = self.gauge_widgets[index]
+            for row, (key, label, default) in enumerate((("offset", "Offset (output unit)", "0"), ("gain", "Gain (unit/count)", "1"), ("unit", "Output unit", "counts"))):
+                widgets[key] = tk.StringVar(value=default)
+                ttk.Label(tab, text=label, style="Panel.TLabel").grid(row=row, column=0, sticky="w")
+                ttk.Entry(tab, textvariable=widgets[key], width=12).grid(row=row, column=1)
+            ttk.Button(tab, text="Apply", command=lambda i=index: self.apply_calibration(i)).grid(row=3, column=0)
+            ttk.Button(tab, text="Zero balance", command=lambda i=index: self.zero_balance(i)).grid(row=3, column=1)
+            ttk.Button(tab, text="Reset calibration", command=lambda i=index: self.reset_calibration(i)).grid(row=4, column=0, columnspan=2)
+        ttk.Label(settings, text="Value = (raw − zero) × gain + offset", style="Panel.TLabel").grid(row=3, column=0, columnspan=3, pady=4)
 
         ttk.Label(right, text="CSV LOGGING", style="Panel.TLabel", font=("Segoe UI Semibold", 11)).grid(row=4, column=0, sticky="w")
         log_buttons = ttk.Frame(right, style="Panel.TFrame")
@@ -443,38 +484,50 @@ class ReceiverDashboard(tk.Tk):
         if line.startswith("LC,"):
             fields = line.split(",")
             try:
-                if len(fields) != 6 or fields[0] != "LC" or fields[1] != "2":
+                if len(fields) != 6 or not fields[1] or not fields[1].isascii() or not all(c.isalnum() or c in "_-" for c in fields[1]) or len(fields[1]) > 32:
                     raise ValueError("unsupported data format")
+                gauge_id = fields[1]
+                sequence, value, flags = map(int, fields[2:5])
+                if not 0 <= sequence <= 0xFFFF or flags < 0:
+                    raise ValueError("invalid sequence or flags")
                 tx_sample_ms = int(fields[5])
                 if not 0 <= tx_sample_ms <= 0xFFFFFFFF:
                     raise ValueError("invalid transmitter timestamp")
-                if self.last_tx_sample_ms is not None and tx_sample_ms < self.last_tx_sample_ms:
-                    if (self.last_tx_sample_ms - tx_sample_ms) > 0x80000000:
-                        self.tx_epoch_ms += 0x100000000  # Normal 49.7-day uint32 wrap.
+                gauge = next((g for g in self.gauges if g.strain_gauge_id == gauge_id), None)
+                if gauge is None:
+                    gauge = next((g for g in self.gauges if not g.strain_gauge_id), None)
+                    if gauge is None:
+                        self.write_debug(received_at, "extra_gauge", line)
+                        self.queue_terminal("debug", f"Ignoring fourth gauge: {gauge_id}\n")
+                        return
+                    gauge.strain_gauge_id = gauge_id
+                    self.calibration_tabs.tab(self.gauges.index(gauge), text=gauge_id)
+                if gauge.last_tx_sample_ms is not None and tx_sample_ms < gauge.last_tx_sample_ms:
+                    if (gauge.last_tx_sample_ms - tx_sample_ms) > 0x80000000:
+                        gauge.tx_epoch_ms += 0x100000000  # Normal 49.7-day uint32 wrap.
                     else:
                         # TX reset: make the next data sample a fresh time origin.
-                        self.points.clear()
-                        self.tx_epoch_ms = 0
-                        self.tx_origin_ms = None
-                        self.notice("Transmitter timestamp restarted; graph reset.")
-                absolute_tx_ms = self.tx_epoch_ms + tx_sample_ms
-                if self.tx_origin_ms is None:
-                    self.tx_origin_ms = absolute_tx_ms
+                        gauge.points.clear()
+                        gauge.last_sequence = None
+                        gauge.tx_epoch_ms = 0
+                        gauge.tx_origin_ms = None
+                        self.notice(f"Gauge {gauge_id}: transmitter restarted; graph reset.")
+                absolute_tx_ms = gauge.tx_epoch_ms + tx_sample_ms
+                if gauge.tx_origin_ms is None:
+                    gauge.tx_origin_ms = absolute_tx_ms
                 point = DataPoint(received_at, time.monotonic() - self.program_started,
-                                  tx_sample_ms, (absolute_tx_ms - self.tx_origin_ms) / 1000.0,
-                                  int(fields[2]), int(fields[3]), int(fields[4]))
+                                  tx_sample_ms, (absolute_tx_ms - gauge.tx_origin_ms) / 1000.0,
+                                  sequence, value, flags, gauge_id)
             except ValueError:
                 self.queue_terminal("debug", f"Malformed data: {line}\n")
                 self.write_debug(received_at, "malformed_data", line)
                 return
-            self.points.append(point)
-            self.value_var.set(f"{point.value:,}")
-            self.seq_var.set(f"Sequence {point.sequence}   •   flags 0x{point.flags:02X}")
-            if self.last_sequence is not None and point.sequence != ((self.last_sequence + 1) & 0xFFFF):
-                self.notice(f"Packet sequence gap: expected {(self.last_sequence + 1) & 0xFFFF}, received {point.sequence}.", error=True)
-            self.last_sequence = point.sequence
-            self.last_tx_sample_ms = tx_sample_ms
-            self.rate_var.set(self.packet_rate_text())
+            gauge.points.append(point)
+            if gauge.last_sequence is not None and point.sequence != ((gauge.last_sequence + 1) & 0xFFFF):
+                self.notice(f"Gauge {gauge_id}: sequence gap; expected {(gauge.last_sequence + 1) & 0xFFFF}, received {point.sequence}.", error=True)
+            gauge.last_sequence = point.sequence
+            gauge.last_tx_sample_ms = tx_sample_ms
+            self.mark_plot_dirty()
             self.queue_terminal("data", line + "\n")
             self.write_data(point)
         else:
@@ -520,7 +573,7 @@ class ReceiverDashboard(tk.Tk):
         if path:
             self.data_file = path.open("w", newline="", encoding="utf-8")
             self.data_writer = csv.writer(self.data_file)
-            self.data_writer.writerow(["pc_received_utc", "host_elapsed_s", "tx_sample_ms", "tx_elapsed_s", "sequence", "raw_value", "flags"])
+            self.data_writer.writerow(["pc_received_utc", "host_elapsed_s", "tx_sample_ms", "tx_elapsed_s", "sequence", "raw_value", "flags", "strain_gauge_id", "converted_value", "unit", "zero", "offset", "gain"])
             self.data_log_button.configure(text="Stop data CSV")
             self.notice(f"Writing data CSV: {path.name}")
 
@@ -550,8 +603,11 @@ class ReceiverDashboard(tk.Tk):
     def write_data(self, point: DataPoint) -> None:
         """Append one decoded packet to the enabled data CSV without flushing per row."""
         if self.data_writer:
+            gauge = next(g for g in self.gauges if g.strain_gauge_id == point.strain_gauge_id)
             self.data_writer.writerow([point.received_at.isoformat(), f"{point.monotonic_s:.6f}", point.tx_sample_ms,
-                                       f"{point.device_elapsed_s:.3f}", point.sequence, point.value, point.flags])
+                                       f"{point.device_elapsed_s:.3f}", point.sequence, point.value, point.flags,
+                                       point.strain_gauge_id, gauge.converted(point.value), gauge.unit,
+                                       gauge.zero, gauge.offset, gauge.gain])
 
     def write_debug(self, timestamp: datetime, category: str, message: str) -> None:
         """Append one non-data UART line to the enabled debug CSV."""
@@ -588,31 +644,68 @@ class ReceiverDashboard(tk.Tk):
             if file:
                 file.flush()
 
-    def packet_rate_text(self) -> str:
+    def packet_rate_text(self, gauge: GaugeState) -> str:
         """Calculate a stable five-second packet rate using TX sample timestamps."""
-        if len(self.points) < 2:
+        if len(gauge.points) < 2:
             return "Rate warming up"
-        newest = self.points[-1].device_elapsed_s
-        recent = [point for point in self.points if point.device_elapsed_s >= newest - 5.0]
+        newest = gauge.points[-1].device_elapsed_s
+        recent = [point for point in gauge.points if point.device_elapsed_s >= newest - 5.0]
         interval = recent[-1].device_elapsed_s - recent[0].device_elapsed_s
         return "Rate warming up" if interval <= 0.0 else f"{(len(recent) - 1) / interval:.1f} pkt/s (5 s TX average)"
 
     def clear_graph(self) -> None:
         """Discard displayed history and reset sequence/timestamp tracking state."""
-        self.points.clear()
-        self.last_sequence = None
-        self.last_tx_sample_ms = None
-        self.tx_epoch_ms = 0
-        self.tx_origin_ms = None
-        self.value_var.set("—")
-        self.seq_var.set("Sequence —")
-        self.rate_var.set("0 packets")
+        for gauge in self.gauges:
+            gauge.points.clear()
+            gauge.last_sequence = None
+            gauge.last_tx_sample_ms = None
+            gauge.tx_epoch_ms = 0
+            gauge.tx_origin_ms = None
         self.mark_plot_dirty()
 
     def draw_plots(self) -> None:
         """Render the raw-count graph using the active X and Y axis settings."""
-        self.draw_graph(self.raw_plot, [float(point.value) for point in self.points], "RAW COUNTS",
-                        self.raw_auto_var.get(), self.raw_y_min_var.get(), self.raw_y_max_var.get(), "")
+        for gauge, widgets in zip(self.gauges, self.gauge_widgets):
+            if gauge.points:
+                point = gauge.points[-1]
+                widgets["value"].set(f"{gauge.strain_gauge_id} · {gauge.converted(point.value):,.6g} {gauge.unit} · raw {point.value:,}\n"
+                                     f"Seq {point.sequence} · flags 0x{point.flags:02X} · {self.packet_rate_text(gauge)}")
+            else:
+                widgets["value"].set(f"{gauge.strain_gauge_id or 'Gauge'} · waiting for data")
+            self.draw_graph(widgets["plot"], gauge.points, [gauge.converted(p.value) for p in gauge.points], gauge.strain_gauge_id,
+                            self.raw_auto_var.get(), self.raw_y_min_var.get(), self.raw_y_max_var.get(), gauge.unit)
+
+    def apply_calibration(self, index: int) -> bool:
+        gauge, widgets = self.gauges[index], self.gauge_widgets[index]
+        try:
+            offset, gain = float(widgets["offset"].get()), float(widgets["gain"].get())
+            if not all(math.isfinite(v) for v in (offset, gain)) or gain == 0:
+                raise ValueError
+        except ValueError:
+            self.notice("Offset and gain must be finite numbers; gain cannot be zero.", error=True)
+            return False
+        gauge.offset, gauge.gain = offset, gain
+        gauge.unit = widgets["unit"].get().strip() or "counts"
+        self.mark_plot_dirty()
+        return True
+
+    def zero_balance(self, index: int) -> None:
+        gauge = self.gauges[index]
+        if not gauge.points:
+            self.notice("Receive a sample before zero balancing.", error=True)
+            return
+        if self.apply_calibration(index):
+            gauge.zero = gauge.points[-1].value
+            gauge.offset = 0.0
+            self.gauge_widgets[index]["offset"].set("0")
+            self.notice(f"Gauge {gauge.strain_gauge_id}: zero set to {gauge.zero:g}; offset reset.")
+
+    def reset_calibration(self, index: int) -> None:
+        gauge, widgets = self.gauges[index], self.gauge_widgets[index]
+        gauge.zero = 0.0
+        for key, value in (("offset", "0"), ("gain", "1"), ("unit", "counts")):
+            widgets[key].set(value)
+        self.apply_calibration(index)
 
     def axis_window_seconds(self) -> float:
         """Return the validated visible TX-time span, constrained to 2..3600 seconds."""
@@ -621,7 +714,7 @@ class ReceiverDashboard(tk.Tk):
         except ValueError:
             return 60.0
 
-    def draw_graph(self, canvas: tk.Canvas, all_values: list[float], title: str,
+    def draw_graph(self, canvas: tk.Canvas, points: deque, all_values: list[float], title: str,
                    auto_y: bool, y_min_text: str, y_max_text: str, unit: str) -> None:
         """Draw one bounded, auto/manual-scaled time-series chart on a Canvas."""
         width, height = canvas.winfo_width(), canvas.winfo_height()
@@ -630,11 +723,11 @@ class ReceiverDashboard(tk.Tk):
         canvas.delete("all")
         left, top, right, bottom = 58, 16, width - 18, height - 34
         canvas.create_rectangle(left, top, right, bottom, outline=GRID)
-        if not self.points:
+        if not points:
             canvas.create_text(width / 2, height / 2, text="Waiting for load-cell data", fill=MUTED, font=("Segoe UI", 12))
             return
-        window, newest = self.axis_window_seconds(), self.points[-1].device_elapsed_s
-        visible = [(point, value) for point, value in zip(self.points, all_values) if point.device_elapsed_s >= newest - window]
+        window, newest = self.axis_window_seconds(), points[-1].device_elapsed_s
+        visible = [(point, value) for point, value in zip(points, all_values) if point.device_elapsed_s >= newest - window]
         values = [value for _point, value in visible]
         if auto_y:
             low, high = min(values), max(values)
@@ -643,7 +736,7 @@ class ReceiverDashboard(tk.Tk):
         else:
             try:
                 low, high = float(y_min_text), float(y_max_text)
-                if high <= low:
+                if not math.isfinite(low) or not math.isfinite(high) or high <= low:
                     raise ValueError
             except ValueError:
                 low, high = min(values) - 1.0, max(values) + 1.0

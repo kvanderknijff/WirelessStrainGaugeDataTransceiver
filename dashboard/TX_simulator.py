@@ -10,7 +10,7 @@ Goal:
     and can be selected in the dashboard.
 
 Protocol:
-    LC,2,<sequence>,<raw_value>,<flags>,<tx_sample_ms>
+    LC,<strain_gauge_id>,<sequence>,<raw_value>,<flags>,<tx_sample_ms>
 
 Dashboard commands:
     start\r\n
@@ -51,6 +51,7 @@ except ImportError:
 
 
 BAUD_RATE = 115200
+GAUGE_IDS = ("SG_1", "SG_2", "SG_3")
 
 
 def heading(text: str) -> None:
@@ -167,7 +168,7 @@ class ReceiverSimulator:
         self.noise = noise
         self.streaming = auto_start
         self.running = True
-        self.sequence = 0
+        self.sequences = {gauge_id: 0 for gauge_id in GAUGE_IDS}
         self.t0 = time.monotonic()
         self.ser: serial.Serial | None = None
         self.lock = threading.Lock()
@@ -208,10 +209,11 @@ class ReceiverSimulator:
             else:
                 self.send(f"DEBUG: unknown command '{cmd}'")
 
-    def measurement(self, elapsed: float) -> int:
+    def measurement(self, elapsed: float, gauge_index: int = 0) -> int:
         return int(
             self.base
-            + self.amplitude * math.sin(2 * math.pi * 0.10 * elapsed)
+            + gauge_index * self.amplitude * 2
+            + self.amplitude * math.sin(2 * math.pi * (0.10 + 0.03 * gauge_index) * elapsed + gauge_index)
             + self.amplitude * 0.18 * math.sin(2 * math.pi * 0.73 * elapsed)
             + random.randint(-self.noise, self.noise)
         )
@@ -249,17 +251,12 @@ class ReceiverSimulator:
 
                 elapsed = now - self.t0
                 tx_ms = int(elapsed * 1000) & 0xFFFFFFFF
-                raw_value = self.measurement(elapsed)
-
-                line = (
-                    f"LC,2,{self.sequence},"
-                    f"{raw_value},0,{tx_ms}"
-                )
-
-                self.send(line)
-                print(f"\rTX  {line:<55}", end="", flush=True)
-
-                self.sequence = (self.sequence + 1) & 0xFFFF
+                for index, gauge_id in enumerate(GAUGE_IDS):
+                    raw_value = self.measurement(elapsed, index)
+                    line = f"LC,{gauge_id},{self.sequences[gauge_id]},{raw_value},0,{tx_ms}"
+                    self.send(line)
+                    print(f"\rTX  {line:<55}", end="", flush=True)
+                    self.sequences[gauge_id] = (self.sequences[gauge_id] + 1) & 0xFFFF
                 next_sample += interval
 
                 if next_sample < time.monotonic() - interval:
@@ -362,7 +359,8 @@ def main() -> int:
 
     heading("Simulatie-instellingen")
     print("Druk op Enter om de standaardwaarden te gebruiken.\n")
-    rate = ask_float("Meetfrequentie in Hz", 10.0)
+    print("Drie gauges: SG_1, SG_2 en SG_3, met verschillende signalen.")
+    rate = ask_float("Meetfrequentie per gauge in Hz", 10.0)
     base = ask_int("Gemiddelde raw_value", 82500)
     amplitude = ask_int("Amplitude van de meetvariatie", 1800, 0)
     noise = ask_int("Maximale willekeurige ruis (+/-)", 60, 0)
@@ -377,7 +375,7 @@ def main() -> int:
     if dashboard_port:
         print(f"Dashboardpoort : {dashboard_port}")
     print(f"Simulatorpoort : {simulator_port}")
-    print(f"Meetfrequentie : {rate:g} Hz")
+    print(f"Meetfrequentie : {rate:g} Hz per gauge ({3 * rate:g} berichten/s totaal)")
     print(f"Raw basis      : {base}")
     print(f"Amplitude      : {amplitude}")
     print(f"Ruis           : +/-{noise}")
