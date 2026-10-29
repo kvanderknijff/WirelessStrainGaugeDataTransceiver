@@ -10,6 +10,7 @@ uses only tkinter (bundled with normal Windows Python) plus pyserial.
 from __future__ import annotations
 
 import csv
+import sys
 import math
 import queue
 import tempfile
@@ -38,26 +39,23 @@ PLOT_REFRESH_SECONDS = 0.20
 LOG_FLUSH_SECONDS = 1.0
 SERIAL_QUEUE_CAPACITY = 4096
 
-# Huisman Equipment-inspired UI palette.
-# The supplied JPEG is blank/solid white, so the dashboard also supports
-# an external "huisman_logo.png" next to this script. If it is not present,
-# a clean text fallback is shown instead of displaying a blank image.
-BRAND_NAVY = "#071B33"
-BRAND_NAVY_2 = "#0B2748"
+# Shared industrial UI palette; acquisition and protocol settings are independent.
+BRAND_NAVY = "#0F1722"
+BRAND_NAVY_2 = "#1D2A39"
 BRAND_BLUE = "#0093D0"
-BRAND_BLUE_LIGHT = "#76C8EA"
-BRAND_SKY = "#E7F6FC"
-BG = "#071B33"
-PANEL = "#0D2A49"
-FIELD = "#061625"
-TEXT = "#F3F8FC"
-MUTED = "#A9C0D3"
-GRID = "#244563"
-PLOT_BG = "#061625"
+BRAND_BLUE_LIGHT = "#0093D0"
+BRAND_SKY = "#F1F5F9"
+BG = "#0F1722"
+PANEL = "#172230"
+FIELD = "#111B27"
+TEXT = "#F1F5F9"
+MUTED = "#94A3B8"
+GRID = "#2B3A49"
+PLOT_BG = "#172230"
 ACCENT = "#0093D0"
-ACCENT_ACTIVE = "#18A4DE"
-SUCCESS = "#37B77A"
-WARNING = "#F0A33A"
+ACCENT_ACTIVE = "#16A5DE"
+SUCCESS = "#32A878"
+WARNING = "#E6A23C"
 DANGER = "#D65B68"
 LOGO_FILE = Path(__file__).with_name("huisman_logo.png")
 
@@ -99,8 +97,10 @@ class ReceiverDashboard(tk.Tk):
         """Create bounded application state, UI variables and recurring UI work."""
         super().__init__()
         self.title(APP_TITLE)
-        self.minsize(1120, 720)
-        self.geometry("1380x850")
+        # Tk scales fonts with the system DPI; size the containing workspace too.
+        self.ui_scale = max(1.0, float(self.tk.call("tk", "scaling")) / (96 / 72))
+        self.minsize(round(1120 * self.ui_scale), round(720 * self.ui_scale))
+        self.geometry(f"{round(1380 * self.ui_scale)}x{round(850 * self.ui_scale)}")
         self.configure(bg=BG)
 
         self.serial_port = None
@@ -138,184 +138,235 @@ class ReceiverDashboard(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
     def _configure_style(self) -> None:
-        """Define the dark ttk theme shared by controls, panels and notebook tabs."""
+        """Apply shared typography, surfaces and interaction states."""
         style = ttk.Style(self)
         style.theme_use("clam")
+        self.option_add("*Font", ("Segoe UI", 10))
+        self.option_add("*tearOff", False)
+        self.option_add("*TCombobox*Listbox.background", FIELD)
+        self.option_add("*TCombobox*Listbox.foreground", TEXT)
+        self.option_add("*TCombobox*Listbox.selectBackground", ACCENT)
         style.configure("TFrame", background=BG)
         style.configure("Panel.TFrame", background=PANEL)
-        style.configure("TLabel", background=BG, foreground=TEXT, font=("Segoe UI", 10))
-        style.configure("Panel.TLabel", background=PANEL, foreground=TEXT, font=("Segoe UI", 10))
-        style.configure("Title.TLabel", background=BG, foreground=TEXT, font=("Segoe UI Semibold", 20))
-        style.configure("Sub.TLabel", background=BG, foreground=MUTED, font=("Segoe UI", 10))
-        style.configure("TButton", padding=(10, 6), font=("Segoe UI Semibold", 9))
-        style.configure("Accent.TButton", background=ACCENT, foreground="white")
-        style.map("Accent.TButton", background=[("active", ACCENT_ACTIVE)])
-        style.configure("Danger.TButton", background=DANGER, foreground="white")
-        style.map("Danger.TButton", background=[("active", "#E16F7A")])
-        style.configure("TCombobox", fieldbackground=FIELD, background=FIELD, foreground=TEXT, arrowcolor=TEXT)
+        for name, bg, fg, font in (
+            ("TLabel", BG, TEXT, ("Segoe UI", 10)),
+            ("Panel.TLabel", PANEL, TEXT, ("Segoe UI", 10)),
+            ("Muted.TLabel", PANEL, MUTED, ("Segoe UI", 9)),
+            ("Section.TLabel", PANEL, TEXT, ("Segoe UI Semibold", 10)),
+            ("Value.TLabel", PANEL, TEXT, ("Segoe UI Semibold", 23)),
+            ("Title.TLabel", BG, TEXT, ("Segoe UI Semibold", 15)),
+            ("Sub.TLabel", BG, MUTED, ("Segoe UI", 9)),
+        ):
+            style.configure(name, background=bg, foreground=fg, font=font)
+        for name, bg, fg, hover in (
+            ("TButton", BRAND_NAVY_2, TEXT, GRID),
+            ("Accent.TButton", ACCENT, "white", ACCENT_ACTIVE),
+            ("Ghost.TButton", PANEL, MUTED, BRAND_NAVY_2),
+            ("Danger.TButton", BRAND_NAVY_2, DANGER, GRID),
+            ("Success.TButton", BRAND_NAVY_2, SUCCESS, GRID),
+        ):
+            style.configure(name, background=bg, foreground=fg, bordercolor=bg,
+                            lightcolor=bg, darkcolor=bg, borderwidth=0,
+                            padding=(12, 7), font=("Segoe UI Semibold", 9), focusthickness=1,
+                            focuscolor=ACCENT)
+            style.map(name, background=[("disabled", PANEL), ("pressed", FIELD), ("active", hover)],
+                      foreground=[("disabled", "#596878")])
+        style.configure("TEntry", fieldbackground=FIELD, foreground=TEXT, insertcolor=TEXT,
+                        bordercolor=GRID, lightcolor=GRID, darkcolor=GRID, padding=6)
+        style.map("TEntry", bordercolor=[("focus", ACCENT)])
+        style.configure("TCombobox", fieldbackground=FIELD, background=BRAND_NAVY_2,
+                        foreground=TEXT, arrowcolor=MUTED, bordercolor=GRID, padding=6)
         style.map("TCombobox", fieldbackground=[("readonly", FIELD)], foreground=[("readonly", TEXT)])
-        style.configure("TCheckbutton", background=PANEL, foreground=TEXT)
+        style.configure("TCheckbutton", background=PANEL, foreground=TEXT, padding=(0, 6))
         style.map("TCheckbutton", background=[("active", PANEL)], foreground=[("active", TEXT)])
         style.configure("TNotebook", background=PANEL, borderwidth=0)
-        style.configure("TNotebook.Tab", background=BRAND_NAVY_2, foreground=MUTED, padding=(14, 7))
-        style.map("TNotebook.Tab", background=[("selected", PANEL)], foreground=[("selected", TEXT)])
-        style.configure("TLabelframe", background=PANEL, foreground=MUTED)
-        style.configure("TLabelframe.Label", background=PANEL, foreground=BRAND_SKY,
-                        font=("Segoe UI Semibold", 9))
-        self.option_add("*tearOff", False)
+        style.configure("TNotebook.Tab", background=PANEL, foreground=MUTED, padding=(12, 7), borderwidth=0)
+        style.map("TNotebook.Tab", background=[("selected", BRAND_NAVY_2)], foreground=[("selected", TEXT)])
+        style.configure("Vertical.TScrollbar", background=GRID, troughcolor=PANEL,
+                        borderwidth=0, arrowcolor=MUTED, width=10)
+        style.configure("TSeparator", background=GRID)
+
+    def _section(self, parent: ttk.Frame, title: str) -> ttk.Frame:
+        """Build a reusable sidebar section with a restrained divider."""
+        section = ttk.Frame(parent, style="Panel.TFrame")
+        section.pack(fill="x", pady=(0, 16))
+        ttk.Label(section, text=title, style="Section.TLabel").pack(anchor="w", pady=(0, 8))
+        content = ttk.Frame(section, style="Panel.TFrame")
+        content.pack(fill="x")
+        ttk.Separator(section).pack(fill="x", pady=(16, 0))
+        return content
 
     def _build_ui(self) -> None:
-        """Build connection controls, raw chart, log controls and terminal tabs."""
-        header = ttk.Frame(self, padding=(22, 14, 22, 8))
+        """Compose the measurement workspace and scrollable instrument controls."""
+        header = ttk.Frame(self, padding=(20, 12))
         header.pack(fill="x")
-
-        # Huisman branding block. Prefer a real PNG logo supplied next to the
-        # script; otherwise show a clean text fallback so the UI never renders
-        # a blank white rectangle from the supplied JPEG.
         brand = tk.Frame(header, bg=BG)
-        brand.pack(side="left", anchor="w")
+        brand.pack(side="left", padx=(0, 20))
         self.logo_image = None
         if LOGO_FILE.exists():
             try:
-                self.logo_image = tk.PhotoImage(file=str(LOGO_FILE))
-                max_w, max_h = 210, 48
-                if self.logo_image.width() > max_w or self.logo_image.height() > max_h:
-                    # PhotoImage has no high-quality arbitrary scaling, so use
-                    # subsample only when a very large PNG is supplied.
-                    sx = max(1, (self.logo_image.width() + max_w - 1) // max_w)
-                    sy = max(1, (self.logo_image.height() + max_h - 1) // max_h)
-                    self.logo_image = self.logo_image.subsample(sx, sy)
-                tk.Label(brand, image=self.logo_image, bg=BG, bd=0).pack(anchor="w")
+                logo = tk.PhotoImage(file=str(LOGO_FILE))
+                scale = max(1, (logo.width() + 139) // 140, (logo.height() + 35) // 36)
+                self.logo_image = logo.subsample(scale, scale)
             except tk.TclError:
-                self.logo_image = None
-
-        if self.logo_image is None:
-            tk.Label(
-                brand, text="HUISMAN", bg=BG, fg="white",
-                font=("Segoe UI Semibold", 24), padx=0, pady=0
-            ).pack(anchor="w")
-            tk.Frame(brand, bg=BRAND_BLUE, height=3, width=128).pack(anchor="w", pady=(2, 3))
-
-        tk.Label(
-            brand, text="WIRELESS STRAIN GAUGE DATA TRANSCEIVER", bg=BG, fg=BRAND_SKY,
-            font=("Segoe UI Semibold", 9), padx=0
-        ).pack(anchor="w")
-
-        self.status_var = tk.StringVar(value="Disconnected - choose a receiver COM port")
-        self.status_ball = tk.Canvas(header, width=18, height=18, bg=BG, highlightthickness=0)
+                pass
+        if self.logo_image:
+            tk.Label(brand, image=self.logo_image, bg=BG, bd=0).pack()
+        else:
+            tk.Label(brand, text="HUISMAN", bg=BG, fg=TEXT,
+                     font=("Segoe UI Semibold", 20)).pack()
+        title = ttk.Frame(header)
+        title.pack(side="left")
+        ttk.Label(title, text="Wireless strain gauge", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(title, text="Data transceiver  /  Engineering measurement workspace", style="Sub.TLabel").pack(anchor="w")
+        self.status_var = tk.StringVar(value="Disconnected")
+        self.status_ball = tk.Canvas(header, width=16, height=16, bg=BG, highlightthickness=0)
         self.status_ball.pack(side="right", padx=(8, 0))
-        self.status_label = ttk.Label(header, textvariable=self.status_var, style="Sub.TLabel")
-        self.status_label.pack(side="right", padx=4)
-        self.set_connection_status("disconnected", self.status_var.get())
+        ttk.Label(header, text="Receiver", style="Sub.TLabel").pack(side="right")
 
-        tk.Frame(self, bg=BRAND_BLUE, height=3).pack(fill="x", padx=22, pady=(0, 10))
-
-        connection = ttk.Frame(self, style="Panel.TFrame", padding=12)
-        connection.pack(fill="x", padx=22, pady=(0, 12))
-        ttk.Label(connection, text="Receiver port", style="Panel.TLabel").pack(side="left", padx=(0, 8))
+        connection = ttk.Frame(self, style="Panel.TFrame", padding=(12, 8))
+        connection.pack(fill="x", padx=20, pady=(0, 12))
+        connection.columnconfigure(1, weight=1)
+        ttk.Label(connection, text="Receiver port", style="Muted.TLabel").grid(row=0, column=0, padx=(0, 12))
         self.port_var = tk.StringVar()
-        self.port_box = ttk.Combobox(connection, textvariable=self.port_var, state="readonly", width=48)
-        self.port_box.pack(side="left", padx=(0, 8))
-        ttk.Button(connection, text="↻ Scan", command=lambda: self.refresh_ports(force=True)).pack(side="left", padx=3)
+        self.port_box = ttk.Combobox(connection, textvariable=self.port_var, state="readonly", width=28)
+        self.port_box.grid(row=0, column=1, sticky="ew", padx=(0, 8))
+        ttk.Button(connection, text="Scan", command=lambda: self.refresh_ports(force=True)).grid(row=0, column=2, padx=(0, 8))
         self.connect_button = ttk.Button(connection, text="Connect", style="Accent.TButton", command=self.toggle_connection)
-        self.connect_button.pack(side="left", padx=3)
-        ttk.Label(connection, text="115200 baud", style="Panel.TLabel").pack(side="left", padx=(15, 0))
+        self.connect_button.grid(row=0, column=3)
+        ttk.Label(connection, text="115200 baud", style="Muted.TLabel").grid(row=0, column=4, padx=16)
+        self.status_label = ttk.Label(connection, textvariable=self.status_var, style="Muted.TLabel", width=30, anchor="e")
+        self.status_label.grid(row=0, column=5)
+        self.set_connection_status("disconnected", "Disconnected")
 
-        body = ttk.Frame(self, padding=(22, 0, 22, 18))
+        body = ttk.Frame(self, padding=(20, 0, 20, 16))
         body.pack(fill="both", expand=True)
-        body.columnconfigure(0, weight=4)
-        body.columnconfigure(1, weight=2)
+        body.columnconfigure(0, weight=1)
+        body.columnconfigure(1, weight=0)
         body.rowconfigure(0, weight=1)
-
-        left = ttk.Frame(body, style="Panel.TFrame", padding=14)
-        left.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
-        left.rowconfigure(2, weight=1)
+        left = ttk.Frame(body)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
         left.columnconfigure(0, weight=1)
-        summary = ttk.Frame(left, style="Panel.TFrame")
-        summary.grid(row=0, column=0, sticky="ew", pady=(0, 10))
-        ttk.Label(summary, text="STRAIN GAUGES · 3 CHANNELS", style="Panel.TLabel").pack(side="left")
-        ttk.Button(summary, text="Clear graphs", command=self.clear_graph).pack(side="right")
-        charts = ttk.Frame(left, style="Panel.TFrame")
-        charts.grid(row=2, column=0, sticky="nsew")
+        left.rowconfigure(1, weight=1)
+        summary = ttk.Frame(left)
+        summary.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        ttk.Label(summary, text="Measurements", font=("Segoe UI Semibold", 11)).pack(side="left")
+        ttk.Button(summary, text="Clear graphs", style="Ghost.TButton", command=self.clear_graph).pack(side="right")
+        charts = ttk.Frame(left)
+        charts.grid(row=1, column=0, sticky="nsew")
         charts.columnconfigure(0, weight=1)
         self.gauge_widgets = []
-        for index, gauge in enumerate(self.gauges):
-            charts.rowconfigure(index, weight=1)
-            panel = ttk.Frame(charts, style="Panel.TFrame")
-            panel.grid(row=index, column=0, sticky="nsew", pady=3)
-            value_var = tk.StringVar(value=f"Gauge {index + 1} · waiting for ID")
-            ttk.Label(panel, textvariable=value_var, style="Panel.TLabel").pack(anchor="w")
-            plot = tk.Canvas(panel, bg=PLOT_BG, highlightthickness=0, height=110)
-            plot.pack(fill="both", expand=True)
+        for index in range(3):
+            charts.rowconfigure(index, weight=1, uniform="gauge")
+            panel = ttk.Frame(charts, style="Panel.TFrame", padding=(12, 8))
+            panel.grid(row=index, column=0, sticky="nsew", pady=(0, 8 if index < 2 else 0))
+            panel.columnconfigure(0, weight=1)
+            panel.rowconfigure(2, weight=1)
+            name = tk.StringVar(value=f"Gauge {index + 1}  /  Awaiting ID")
+            value = tk.StringVar(value="—")
+            unit = tk.StringVar(value="counts")
+            metadata = tk.StringVar(value="No samples received")
+            ttk.Label(panel, textvariable=name, style="Section.TLabel").grid(row=0, column=0, sticky="w")
+            reading = ttk.Frame(panel, style="Panel.TFrame")
+            reading.grid(row=0, column=1, rowspan=2, sticky="e", padx=(12, 0))
+            ttk.Label(reading, textvariable=value, style="Value.TLabel").pack(side="left")
+            ttk.Label(reading, textvariable=unit, style="Muted.TLabel").pack(side="left", padx=(8, 0), anchor="s", pady=(0, 5))
+            ttk.Label(panel, textvariable=metadata, style="Muted.TLabel").grid(row=1, column=0, sticky="w", pady=(4, 4))
+            plot = tk.Canvas(panel, bg=PLOT_BG, highlightthickness=0, height=100)
+            plot.grid(row=2, column=0, columnspan=2, sticky="nsew")
             plot.bind("<Configure>", lambda _event: self.mark_plot_dirty())
-            self.gauge_widgets.append({"value": value_var, "plot": plot})
-        ttk.Label(left, text="X-axis uses transmitter sample time. Set chart span and Y ranges in Graph settings.", style="Panel.TLabel").grid(row=3, column=0, sticky="w", pady=(9, 0))
+            self.gauge_widgets.append({"value": value, "name": name, "reading_unit": unit, "metadata": metadata, "plot": plot})
+        ttk.Label(left, text="Time base: transmitter sample clock  /  Three independent channels", style="Sub.TLabel").grid(row=2, column=0, sticky="w", pady=(8, 0))
 
         sidebar = ttk.Frame(body, style="Panel.TFrame")
         sidebar.grid(row=0, column=1, sticky="nsew")
         sidebar.rowconfigure(0, weight=1)
         sidebar.columnconfigure(0, weight=1)
-        sidebar_canvas = tk.Canvas(sidebar, bg=PANEL, highlightthickness=0, width=430)
-        sidebar_canvas.grid(row=0, column=0, sticky="nsew")
-        sidebar_scroll = ttk.Scrollbar(sidebar, orient="vertical", command=sidebar_canvas.yview)
-        sidebar_scroll.grid(row=0, column=1, sticky="ns")
-        sidebar_canvas.configure(yscrollcommand=sidebar_scroll.set)
-        right = ttk.Frame(sidebar_canvas, style="Panel.TFrame", padding=14)
-        sidebar_window = sidebar_canvas.create_window((0, 0), window=right, anchor="nw")
-        right.bind("<Configure>", lambda _event: sidebar_canvas.configure(scrollregion=sidebar_canvas.bbox("all")))
-        sidebar_canvas.bind("<Configure>", lambda event: sidebar_canvas.itemconfigure(sidebar_window, width=event.width))
-        right.columnconfigure(0, weight=1)
-        ttk.Label(right, text="DEVICE CONTROLS", style="Panel.TLabel", font=("Segoe UI Semibold", 11)).grid(row=0, column=0, sticky="w")
-        buttons = ttk.Frame(right, style="Panel.TFrame")
-        buttons.grid(row=1, column=0, sticky="ew", pady=(8, 14))
-        ttk.Button(buttons, text="Start node", style="Accent.TButton", command=lambda: self.send_command("start")).pack(side="left", fill="x", expand=True, padx=(0, 4))
-        ttk.Button(buttons, text="Stop node", style="Danger.TButton", command=lambda: self.send_command("stop")).pack(side="left", fill="x", expand=True, padx=(4, 0))
-        self.notice_var = tk.StringVar(value="Ready. Connect to a receiver serial port.")
-        notice = tk.Label(right, textvariable=self.notice_var, justify="left", anchor="w", wraplength=340,
-                          bg=BRAND_NAVY_2, fg=BRAND_SKY, font=("Segoe UI", 10), padx=12, pady=10)
-        notice.grid(row=2, column=0, sticky="ew", pady=(0, 14))
+        canvas = tk.Canvas(sidebar, bg=PANEL, highlightthickness=0, width=round(360 * self.ui_scale))
+        canvas.grid(row=0, column=0, sticky="nsew")
+        scroll = ttk.Scrollbar(sidebar, orient="vertical", command=canvas.yview)
+        scroll.grid(row=0, column=1, sticky="ns")
+        canvas.configure(yscrollcommand=scroll.set)
+        right = ttk.Frame(canvas, style="Panel.TFrame", padding=12)
+        window = canvas.create_window((0, 0), window=right, anchor="nw")
+        right.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(window, width=e.width))
+        self.sidebar_canvas = canvas
+        self.bind("<MouseWheel>", self._scroll_sidebar, add="+")
+        self.bind("<Button-4>", self._scroll_sidebar, add="+")
+        self.bind("<Button-5>", self._scroll_sidebar, add="+")
 
-        settings = ttk.LabelFrame(right, text="GRAPH AND CALIBRATION", padding=8)
-        settings.grid(row=3, column=0, sticky="ew", pady=(0, 12))
-        ttk.Label(settings, text="X window (s)", style="Panel.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Entry(settings, textvariable=self.x_window_var, width=7).grid(row=0, column=1, sticky="w", padx=(6, 12))
-        ttk.Button(settings, text="Apply", command=self.mark_plot_dirty).grid(row=0, column=2, sticky="w")
-        self._axis_controls(settings, 1, "Value Y", self.raw_auto_var, self.raw_y_min_var, self.raw_y_max_var)
-        calibration = ttk.Notebook(settings)
-        calibration.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+        device = self._section(right, "Device control")
+        self.start_button = ttk.Button(device, text="Start node", style="Success.TButton", command=lambda: self.send_command("start"))
+        self.start_button.pack(side="left", fill="x", expand=True, padx=(0, 4))
+        self.stop_button = ttk.Button(device, text="Stop node", style="Danger.TButton", command=lambda: self.send_command("stop"))
+        self.stop_button.pack(side="left", fill="x", expand=True, padx=(4, 0))
+        self.notice_var = tk.StringVar(value="Connect to a receiver to begin.")
+        self.notice_label = tk.Label(right, textvariable=self.notice_var, justify="left", anchor="w",
+                                     wraplength=round(320 * self.ui_scale), bg=PANEL, fg=MUTED, font=("Segoe UI", 9))
+        self.notice_label.pack(fill="x", pady=(0, 16))
+
+        settings = self._section(right, "Graph settings")
+        settings.columnconfigure(1, weight=1)
+        ttk.Label(settings, text="Time span (s)", style="Panel.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Entry(settings, textvariable=self.x_window_var, width=8).grid(row=0, column=1, padx=8, sticky="ew")
+        ttk.Button(settings, text="Apply", command=self.mark_plot_dirty).grid(row=0, column=2)
+        self._axis_controls(settings, 1, "Y axis", self.raw_auto_var, self.raw_y_min_var, self.raw_y_max_var)
+        ttk.Label(settings, text="Manual range: minimum / maximum", style="Muted.TLabel").grid(row=2, column=0, columnspan=3, sticky="w", pady=(4, 0))
+
+        calibration = ttk.Notebook(self._section(right, "Calibration"))
+        calibration.pack(fill="x")
         self.calibration_tabs = calibration
-        for index, gauge in enumerate(self.gauges):
-            tab = ttk.Frame(calibration, style="Panel.TFrame", padding=5)
+        for index in range(3):
+            tab = ttk.Frame(calibration, style="Panel.TFrame", padding=(0, 8))
             calibration.add(tab, text=f"Gauge {index + 1}")
+            tab.columnconfigure(1, weight=1)
             widgets = self.gauge_widgets[index]
-            for row, (key, label, default) in enumerate((("offset", "Offset (output unit)", "0"), ("gain", "Gain (unit/count)", "1"), ("unit", "Output unit", "counts"))):
+            for row, (key, label, default) in enumerate((("offset", "Offset", "0"), ("gain", "Gain (unit/count)", "1"), ("unit", "Output unit", "counts"))):
                 widgets[key] = tk.StringVar(value=default)
-                ttk.Label(tab, text=label, style="Panel.TLabel").grid(row=row, column=0, sticky="w")
-                ttk.Entry(tab, textvariable=widgets[key], width=12).grid(row=row, column=1)
-            ttk.Button(tab, text="Apply", command=lambda i=index: self.apply_calibration(i)).grid(row=3, column=0)
-            ttk.Button(tab, text="Zero balance", command=lambda i=index: self.zero_balance(i)).grid(row=3, column=1)
-            ttk.Button(tab, text="Reset calibration", command=lambda i=index: self.reset_calibration(i)).grid(row=4, column=0, columnspan=2)
-        ttk.Label(settings, text="Value = (raw − zero) × gain + offset", style="Panel.TLabel").grid(row=3, column=0, columnspan=3, pady=4)
+                ttk.Label(tab, text=label, style="Panel.TLabel").grid(row=row, column=0, sticky="w", padx=(0, 12), pady=3)
+                ttk.Entry(tab, textvariable=widgets[key], width=12).grid(row=row, column=1, sticky="ew", pady=3)
+            actions = ttk.Frame(tab, style="Panel.TFrame")
+            actions.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+            ttk.Button(actions, text="Apply", style="Accent.TButton", command=lambda i=index: self.apply_calibration(i)).pack(side="left", padx=(0, 8))
+            ttk.Button(actions, text="Zero balance", command=lambda i=index: self.zero_balance(i)).pack(side="left")
+            ttk.Button(tab, text="Reset calibration", style="Ghost.TButton", command=lambda i=index: self.reset_calibration(i)).grid(row=4, column=0, columnspan=2, sticky="w", pady=(4, 0))
+            ttk.Label(tab, text="(raw − zero) × gain + offset", style="Muted.TLabel").grid(row=5, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
-        ttk.Label(right, text="CSV LOGGING", style="Panel.TLabel", font=("Segoe UI Semibold", 11)).grid(row=4, column=0, sticky="w")
-        log_buttons = ttk.Frame(right, style="Panel.TFrame")
-        log_buttons.grid(row=5, column=0, sticky="ew", pady=(8, 8))
-        self.data_log_button = ttk.Button(log_buttons, text="Start data CSV", command=self.toggle_data_logging)
-        self.data_log_button.pack(fill="x", pady=(0, 5))
-        self.debug_log_button = ttk.Button(log_buttons, text="Start debug CSV", command=self.toggle_debug_logging)
+        logging = self._section(right, "Data logging")
+        self.data_log_button = ttk.Button(logging, text="Start data CSV", command=self.toggle_data_logging)
+        self.data_log_button.pack(fill="x", pady=(0, 6))
+        self.debug_log_button = ttk.Button(logging, text="Start debug CSV", command=self.toggle_debug_logging)
         self.debug_log_button.pack(fill="x")
-        ttk.Label(right, text="Data and debug logs are deliberately separate. Each row is stamped by this PC in UTC.", style="Panel.TLabel", wraplength=340).grid(row=6, column=0, sticky="w", pady=(0, 14))
-
-        output_title = ttk.Frame(right, style="Panel.TFrame")
-        output_title.grid(row=7, column=0, sticky="ew")
-        ttk.Label(output_title, text="LIVE OUTPUT", style="Panel.TLabel", font=("Segoe UI Semibold", 11)).pack(side="left")
-        ttk.Button(output_title, text="Clear data", command=lambda: self.clear_terminal(self.data_text)).pack(side="right", padx=(4, 0))
-        ttk.Button(output_title, text="Clear debug", command=lambda: self.clear_terminal(self.debug_text)).pack(side="right")
-        notebook = ttk.Notebook(right)
-        notebook.grid(row=8, column=0, sticky="nsew")
-        right.rowconfigure(8, weight=1)
+        ttk.Label(logging, text="Separate CSV files · PC timestamps in UTC", style="Muted.TLabel").pack(anchor="w", pady=(8, 0))
+        output = self._section(right, "Live output")
+        actions = ttk.Frame(output, style="Panel.TFrame")
+        actions.pack(fill="x", pady=(0, 4))
+        ttk.Button(actions, text="Clear data", style="Ghost.TButton", command=lambda: self.clear_terminal(self.data_text)).pack(side="left")
+        ttk.Button(actions, text="Clear debug", style="Ghost.TButton", command=lambda: self.clear_terminal(self.debug_text)).pack(side="left", padx=(4, 0))
+        notebook = ttk.Notebook(output)
+        notebook.pack(fill="both", expand=True)
         self.data_text = self._make_text_tab(notebook, "Data")
         self.debug_text = self._make_text_tab(notebook, "Debug")
+        self._update_connection_controls(False)
+
+    def _scroll_sidebar(self, event) -> None:
+        """Scroll settings only when the pointer is inside the sidebar."""
+        canvas = self.sidebar_canvas
+        widget = self.winfo_containing(event.x_root, event.y_root)
+        if widget is None or not str(widget).startswith(str(canvas)):
+            return
+        if canvas.bbox("all")[3] <= canvas.winfo_height():
+            return
+        delta = -1 if getattr(event, "num", None) == 4 else 1
+        if getattr(event, "delta", 0):
+            delta = -1 if event.delta > 0 else 1
+        canvas.yview_scroll(delta * 3, "units")
+
+    def _update_connection_controls(self, connected: bool) -> None:
+        self.port_box.configure(state="disabled" if connected else "readonly")
+        for button in (self.start_button, self.stop_button):
+            button.configure(state="normal" if connected else "disabled")
 
     def _axis_controls(self, parent: ttk.LabelFrame, row: int, label: str,
                        auto_var: tk.BooleanVar, min_var: tk.StringVar, max_var: tk.StringVar) -> None:
@@ -326,7 +377,7 @@ class ReceiverDashboard(tk.Tk):
 
     def set_connection_status(self, state: str, text: str) -> None:
         """Show a colored state ball and matching human-readable connection status."""
-        colors = {"connected": SUCCESS, "waiting": WARNING, "disconnected": DANGER}
+        colors = {"connected": SUCCESS, "waiting": WARNING, "disconnected": MUTED}
         color = colors.get(state, colors["disconnected"])
         self.status_ball.delete("all")
         self.status_ball.create_oval(3, 3, 15, 15, fill=color, outline="")
@@ -340,7 +391,7 @@ class ReceiverDashboard(tk.Tk):
         """Create one bounded, scrollable read-only terminal tab."""
         frame = ttk.Frame(notebook, style="Panel.TFrame")
         notebook.add(frame, text=label)
-        text = tk.Text(frame, height=12, bg=PLOT_BG, fg="#d6e4f3", insertbackground="white",
+        text = tk.Text(frame, height=10, width=30, padx=8, pady=8, bg=FIELD, fg="#d6e4f3", insertbackground="white",
                        relief="flat", wrap="word", font=("Cascadia Mono", 9), state="disabled")
         scroll = ttk.Scrollbar(frame, command=text.yview)
         text.configure(yscrollcommand=scroll.set)
@@ -351,7 +402,7 @@ class ReceiverDashboard(tk.Tk):
     def refresh_ports(self, force: bool = False) -> None:
         """Enumerate available serial ports without opening or probing any device."""
         if list_ports is None:
-            self.notice("pyserial is not installed. Run: py -m pip install -r requirements.txt", error=True)
+            self.notice("pyserial is not installed. Run: py -m pip install pyserial", error=True)
             return
         now = time.monotonic()
         if not force and now - self.last_port_scan < 0.8:
@@ -409,7 +460,8 @@ class ReceiverDashboard(tk.Tk):
                                               name="serial-reader", daemon=True)
         self.serial_thread.start()
         self.connect_button.configure(text="Disconnect", style="Danger.TButton")
-        self.set_connection_status("connected", f"Connected and receiving: {device}")
+        self._update_connection_controls(True)
+        self.set_connection_status("connected", "Connected")
         self.notice(f"Connected to {device}. Receiver output is live.")
 
     def disconnect(self) -> None:
@@ -423,7 +475,8 @@ class ReceiverDashboard(tk.Tk):
             except Exception:
                 pass
         self.connect_button.configure(text="Connect", style="Accent.TButton")
-        self.set_connection_status("disconnected", "Disconnected - choose a receiver COM port")
+        self._update_connection_controls(False)
+        self.set_connection_status("disconnected", "Disconnected")
         self.notice("Receiver disconnected.")
 
     def queue_reader_event(self, kind: str, content: str, generation: int) -> None:
@@ -501,7 +554,7 @@ class ReceiverDashboard(tk.Tk):
                         self.queue_terminal("debug", f"Ignoring fourth gauge: {gauge_id}\n")
                         return
                     gauge.strain_gauge_id = gauge_id
-                    self.calibration_tabs.tab(self.gauges.index(gauge), text=gauge_id)
+                    # Keep stable channel tabs; the full device ID is shown above its graph.
                 if gauge.last_tx_sample_ms is not None and tx_sample_ms < gauge.last_tx_sample_ms:
                     if (gauge.last_tx_sample_ms - tx_sample_ms) > 0x80000000:
                         gauge.tx_epoch_ms += 0x100000000  # Normal 49.7-day uint32 wrap.
@@ -566,7 +619,7 @@ class ReceiverDashboard(tk.Tk):
         if self.data_file is not None:
             self.data_file.close()
             self.data_file = self.data_writer = None
-            self.data_log_button.configure(text="Start data CSV")
+            self.data_log_button.configure(text="Start data CSV", style="TButton")
             self.notice("Data CSV logging stopped.")
             return
         path = self.choose_log_path("loadcell_data")
@@ -574,7 +627,7 @@ class ReceiverDashboard(tk.Tk):
             self.data_file = path.open("w", newline="", encoding="utf-8")
             self.data_writer = csv.writer(self.data_file)
             self.data_writer.writerow(["pc_received_utc", "host_elapsed_s", "tx_sample_ms", "tx_elapsed_s", "sequence", "raw_value", "flags", "strain_gauge_id", "converted_value", "unit", "zero", "offset", "gain"])
-            self.data_log_button.configure(text="Stop data CSV")
+            self.data_log_button.configure(text="Recording data · Stop CSV", style="Success.TButton")
             self.notice(f"Writing data CSV: {path.name}")
 
     def toggle_debug_logging(self) -> None:
@@ -582,7 +635,7 @@ class ReceiverDashboard(tk.Tk):
         if self.debug_file is not None:
             self.debug_file.close()
             self.debug_file = self.debug_writer = None
-            self.debug_log_button.configure(text="Start debug CSV")
+            self.debug_log_button.configure(text="Start debug CSV", style="TButton")
             self.notice("Debug CSV logging stopped.")
             return
         path = self.choose_log_path("receiver_debug")
@@ -590,7 +643,7 @@ class ReceiverDashboard(tk.Tk):
             self.debug_file = path.open("w", newline="", encoding="utf-8")
             self.debug_writer = csv.writer(self.debug_file)
             self.debug_writer.writerow(["pc_received_utc", "category", "message"])
-            self.debug_log_button.configure(text="Stop debug CSV")
+            self.debug_log_button.configure(text="Recording debug · Stop CSV", style="Success.TButton")
             self.notice(f"Writing debug CSV: {path.name}")
 
     def choose_log_path(self, prefix: str) -> Path | None:
@@ -665,13 +718,16 @@ class ReceiverDashboard(tk.Tk):
 
     def draw_plots(self) -> None:
         """Render the raw-count graph using the active X and Y axis settings."""
-        for gauge, widgets in zip(self.gauges, self.gauge_widgets):
+        for index, (gauge, widgets) in enumerate(zip(self.gauges, self.gauge_widgets)):
+            widgets["name"].set(f"Gauge {index + 1}  /  {gauge.strain_gauge_id or 'Awaiting ID'}")
+            widgets["reading_unit"].set(gauge.unit)
             if gauge.points:
                 point = gauge.points[-1]
-                widgets["value"].set(f"{gauge.strain_gauge_id} · {gauge.converted(point.value):,.6g} {gauge.unit} · raw {point.value:,}\n"
-                                     f"Seq {point.sequence} · flags 0x{point.flags:02X} · {self.packet_rate_text(gauge)}")
+                widgets["value"].set(f"{gauge.converted(point.value):,.6g}")
+                widgets["metadata"].set(f"Raw {point.value:,}  ·  Seq {point.sequence}  ·  Flags 0x{point.flags:02X}  ·  {self.packet_rate_text(gauge).replace(' (5 s TX average)', '')}")
             else:
-                widgets["value"].set(f"{gauge.strain_gauge_id or 'Gauge'} · waiting for data")
+                widgets["value"].set("—")
+                widgets["metadata"].set("No samples received")
             self.draw_graph(widgets["plot"], gauge.points, [gauge.converted(p.value) for p in gauge.points], gauge.strain_gauge_id,
                             self.raw_auto_var.get(), self.raw_y_min_var.get(), self.raw_y_max_var.get(), gauge.unit)
 
@@ -721,10 +777,13 @@ class ReceiverDashboard(tk.Tk):
         if width < 20 or height < 20:
             return
         canvas.delete("all")
-        left, top, right, bottom = 58, 16, width - 18, height - 34
-        canvas.create_rectangle(left, top, right, bottom, outline=GRID)
+        scale = self.ui_scale
+        left, top, right, bottom = 64 * scale, 18 * scale, width - 18 * scale, height - 28 * scale
+        if bottom <= top or right <= left:
+            return
+        canvas.create_line(left, top, left, bottom, right, bottom, fill=GRID)
         if not points:
-            canvas.create_text(width / 2, height / 2, text="Waiting for load-cell data", fill=MUTED, font=("Segoe UI", 12))
+            canvas.create_text(width / 2, height / 2, text="Waiting for load-cell data", fill=MUTED, font=("Segoe UI", 10))
             return
         window, newest = self.axis_window_seconds(), points[-1].device_elapsed_s
         visible = [(point, value) for point, value in zip(points, all_values) if point.device_elapsed_s >= newest - window]
@@ -740,34 +799,56 @@ class ReceiverDashboard(tk.Tk):
                     raise ValueError
             except ValueError:
                 low, high = min(values) - 1.0, max(values) + 1.0
-        for step in range(5):
-            y, value = top + (bottom - top) * step / 4, high - (high - low) * step / 4
+        steps = 4 if height >= 150 else 2
+        for step in range(steps + 1):
+            y, value = top + (bottom - top) * step / steps, high - (high - low) * step / steps
             canvas.create_line(left, y, right, y, fill=GRID)
             canvas.create_text(left - 7, y, text=f"{value:,.3g}", fill=MUTED, anchor="e", font=("Segoe UI", 8))
         tick_step = max(1, int(window / 4))
         for seconds_ago in range(0, int(window) + 1, tick_step):
             x = right - (right - left) * seconds_ago / window
             canvas.create_line(x, top, x, bottom, fill=GRID)
-            canvas.create_text(x, bottom + 16, text=f"-{seconds_ago}s" if seconds_ago else "now", fill=MUTED, font=("Segoe UI", 8))
+            canvas.create_text(x, bottom + 16 * scale, text=f"-{seconds_ago}s" if seconds_ago else "now", fill=MUTED, font=("Segoe UI", 8))
         coordinates: list[float] = []
         for point, value in visible:
             coordinates.extend((right - (right - left) * (newest - point.device_elapsed_s) / window,
                                 bottom - (bottom - top) * (value - low) / (high - low)))
-        if len(coordinates) >= 4:
-            canvas.create_line(*coordinates, fill=BRAND_BLUE_LIGHT, width=2, smooth=True)
-        if coordinates:
-            canvas.create_oval(coordinates[-2] - 3, coordinates[-1] - 3, coordinates[-2] + 3, coordinates[-1] + 3, fill=BRAND_SKY, outline="")
-        canvas.create_text(left, top - 8, text=f"{title} {unit}".strip(), fill=MUTED, anchor="sw", font=("Segoe UI Semibold", 8))
+        # Clip segments to the manual Y range without flattening out-of-range
+        # readings into a false plateau along the axis boundary.
+        path: list[float] = []
+        for i in range(2, len(coordinates), 2):
+            x0, y0, x1, y1 = coordinates[i - 2:i + 2]
+            start, end = 0.0, 1.0
+            dy = y1 - y0
+            if dy:
+                bounds = sorted(((top - y0) / dy, (bottom - y0) / dy))
+                start, end = max(start, bounds[0]), min(end, bounds[1])
+            elif not top <= y0 <= bottom:
+                start, end = 1.0, 0.0
+            if start > end:
+                if len(path) >= 4:
+                    canvas.create_line(*path, fill=ACCENT, width=1.5, smooth=False)
+                path = []
+                continue
+            first = [x0 + (x1 - x0) * start, y0 + dy * start]
+            last = [x0 + (x1 - x0) * end, y0 + dy * end]
+            if path and path[-2:] != first:
+                canvas.create_line(*path, fill=ACCENT, width=1.5, smooth=False)
+                path = []
+            if not path:
+                path.extend(first)
+            path.extend(last)
+        if len(path) >= 4:
+            canvas.create_line(*path, fill=ACCENT, width=1.5, smooth=False)
+        if coordinates and top <= coordinates[-1] <= bottom:
+            x, y = coordinates[-2:]
+            canvas.create_oval(x - 2, y - 2, x + 2, y + 2, fill=ACCENT, outline="")
+        canvas.create_text(left, top - 8, text=unit, fill=MUTED, anchor="sw", font=("Segoe UI Semibold", 8))
 
-    # def draw_plot(self) -> None:
-    #     """Compatibility entry point retained for older callbacks; delegates to draw_plots."""
-    #     """Compatibility wrapper for older callbacks."""
-    #     self.draw_plots()
-    #     return
-        
     def notice(self, text: str, error: bool = False) -> None:
         """Display a concise informational or warning notification in the side panel."""
-        self.notice_var.set(("⚠ " if error else "● ") + text)
+        self.notice_var.set(text)
+        self.notice_label.configure(fg=WARNING if error else MUTED)
 
     def on_close(self) -> None:
         """Close serial/log resources cleanly before destroying the Tk application."""
@@ -778,11 +859,25 @@ class ReceiverDashboard(tk.Tk):
         self.destroy()
 
 
+def enable_windows_dpi_awareness() -> None:
+    """Use system DPI before creating any Tk windows (older Windows supported)."""
+    if sys.platform == "win32":
+        import ctypes
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(1)
+        except (AttributeError, OSError):
+            try:
+                ctypes.windll.user32.SetProcessDPIAware()
+            except (AttributeError, OSError):
+                pass
+
+
 if __name__ == "__main__":
+    enable_windows_dpi_awareness()
     if serial is None:
         root = tk.Tk()
         root.withdraw()
-        messagebox.showerror(APP_TITLE, "pyserial is not installed.\n\nRun: py -m pip install -r requirements.txt")
+        messagebox.showerror(APP_TITLE, "pyserial is not installed.\n\nRun: py -m pip install pyserial")
         root.destroy()
     else:
         ReceiverDashboard().mainloop()
